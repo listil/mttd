@@ -408,13 +408,17 @@ class SessionAggregator(
 
             val p = pendingSlot
             pendingSlot = null
-            val key = if (p != null && p.pageId == pageId && p.slotId == slotId) {
-                p.key
+            val matchedPending: Boolean
+            val key: String
+            if (p != null && p.pageId == pageId && p.slotId == slotId) {
+                matchedPending = true
+                key = p.key
             } else {
                 // 짝이 안 맞으면 그 pending 은 스냅샷이었던 것 → baseline 으로 확정하고
                 // 이번 슬롯은 position 인덱스(또는 position+itemId) 로 식별.
                 if (p != null) writeBaseline(p)
-                resolveSlotKey(pageId, slotId, itemId)
+                matchedPending = false
+                key = resolveSlotKey(pageId, slotId, itemId)
             }
 
             if (currentCount == null) return
@@ -424,6 +428,7 @@ class SessionAggregator(
                 pageId = pageId,
                 totalCountInSlot = currentCount,
                 timestampMs = System.currentTimeMillis(),
+                confirmedChange = matchedPending,
             )
             return
         }
@@ -573,20 +578,31 @@ class SessionAggregator(
      *
      * 한 포지션은 항상 하나의 키만 점유해야 하는데, uuid 직접 파싱 경로(케이스 A)와
      * [resolveSlotKey] 의 합성 키 fallback 경로가 **같은 물리 슬롯을 서로 다른 키 문자열로**
-     * 기록할 수 있다 (예: 최초 스냅샷 때는 fallback 합성 키로 잡혔다가, 이후 실거래 이벤트는
-     * 항상 uuid 키로 옴). 두 키가 [slotLastCount] 에 각각 남아있으면 [computeHoldings] 의
-     * itemId 합산에서 같은 물리 아이템이 이중으로 잡힌다 (실측: 8개 보유 중 1개 구매 → 9개가
-     * 아니라 17개=8+9 로 표시되는 버그의 원인).
+     * 기록할 수 있다 (예: baseline(InitBagData) 때는 fallback 합성 키로 잡혔다가, 이후 실거래
+     * 이벤트는 항상 uuid 키로 옴).
      *
-     * 그래서 점유 키가 바뀌면 이전 키는 이 포지션을 더 이상 대표하지 않는다고 보고 0 으로
+     * 새 키가 **같은 아이템**이면 (합성 키 ↔ uuid 키 전환일 뿐, 물리적으로 같은 슬롯) 예전 키의
+     * 수량을 새 키로 그대로 이어받는다 — 그냥 0으로 지우면 baseline 때 잡힌 수량 정보가
+     * 사라져서, 그 다음 실거래 Modfy 가 "이 키는 처음 본다" 고 오판하고 **기존 보유량까지
+     * 통째로 신규 획득으로** 잡아버린다 (실측: baseline 581개 상태에서 실제로는 +3개만
+     * 늘었는데 확정 픽업 이벤트가 새 키로 들어오는 바람에 584개 전부를 "이번에 획득" 으로
+     * 잡아 회차 합계가 592로 부풀려진 버그).
+     *
+     * 새 키가 **다른 아이템**이면 (슬롯이 재사용된 것) 예전 키는 이 포지션과 무관해졌으니 0으로
      * 무효화한다 — 그 아이템이 실제로 다른 슬롯으로 옮겨간 경우엔 그 슬롯의 Update 라인이
-     * (같은 배치 안에서) 다시 정확한 수량으로 채워준다.
+     * (같은 배치 안에서) 다시 정확한 수량으로 채워준다. 이렇게 안 하면 두 키가 각각
+     * [slotLastCount] 에 남아 [computeHoldings] 의 itemId 합산에서 같은 물리 아이템이
+     * 이중으로 잡힌다 (실측: 8개 보유 중 1개 구매 → 9개가 아니라 17개=8+9 로 표시되던 버그).
      */
     private fun updatePositionKey(pageId: String, slotId: String, newKey: String) {
         val posKey = "$pageId:$slotId"
         val oldKey = slotKeyByPosition[posKey]
         if (oldKey != null && oldKey != newKey) {
-            slotLastCount[oldKey] = 0
+            val oldCount = slotLastCount.remove(oldKey)
+            val sameItem = extractItemId(oldKey) != null && extractItemId(oldKey) == extractItemId(newKey)
+            if (sameItem && oldCount != null && !slotLastCount.containsKey(newKey)) {
+                slotLastCount[newKey] = oldCount
+            }
         }
         slotKeyByPosition[posKey] = newKey
     }
@@ -744,6 +760,8 @@ class SessionAggregator(
         pageId: String,
         totalCountInSlot: Int,
         timestampMs: Long,
+        /** 바로 앞 Update/Add 라인이 같은 슬롯에 대해 이 Modfy 와 직접 짝지어졌는지 (실제 변화 확정). */
+        confirmedChange: Boolean = false,
     ) {
         // 가방 정렬 관측 전 = 슬롯 기준 수량 미확보 → 계산 안 하고 baseline 만 쌓는다.
         if (!_state.value.baselineReady) {
@@ -765,14 +783,24 @@ class SessionAggregator(
         val prev = slotLastCount[slotUuid]
         slotLastCount[slotUuid] = totalCountInSlot
         val quantity: Int = if (prev == null) {
-            // 첫 sighting — delta 계산 불가. 안전하게 quantity=±1 로만 카운트.
-            //   PICKUP: +1 (신규 드롭 최소값. 실제로 스택 5개 얻어도 1로만. 절대 오카운트 안 함.)
-            //   CONSUME: -1 (소비 최소값.)
-            //   NONE (블록 밖): +1 로 간주 (currency 픽업 대부분이 여기 해당. 소비면 이후 delta 로 보정.)
-            when (blockContext) {
-                BlockContext.PICKUP -> 1
-                BlockContext.CONSUME -> -1
-                BlockContext.NONE -> 1
+            if (confirmedChange && blockContext != BlockContext.CONSUME) {
+                // 바로 앞줄 Update/Add 가 이 Modfy 와 직접 짝지어져 실제 변화라고 확정됐는데
+                // 이 슬롯을 처음 본다 = baseline 스냅샷엔 없던 완전히 새 슬롯이 방금 생긴 것.
+                // 0 → count 전체를 델타로 인정해야 스택으로 여러 개 한 번에 드랍되는 경우
+                // (예: 신규 아이템 3개 동시 획득) 를 1개로 과소 집계하지 않는다.
+                totalCountInSlot
+            } else {
+                // 확정 못 한 경로(합성 키 fallback 등)거나 소비 컨텍스트 — 과거 상태를 모르니
+                // 안전하게 ±1 로만 카운트해서 절대 오카운트 안 되게 한다.
+                //   PICKUP: +1 (신규 드롭 최소값)
+                //   CONSUME: -1 (소비 최소값 — totalCountInSlot 은 소비 "이후" 남은 값이라
+                //             델타로 못 씀)
+                //   NONE (블록 밖): +1 로 간주
+                when (blockContext) {
+                    BlockContext.PICKUP -> 1
+                    BlockContext.CONSUME -> -1
+                    BlockContext.NONE -> 1
+                }
             }
         } else {
             val delta = totalCountInSlot - prev
