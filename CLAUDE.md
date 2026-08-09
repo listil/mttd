@@ -26,12 +26,19 @@ echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties   # adjust path
 ./gradlew :app:assembleRelease            # release APK (signed only if keystore.properties exists)
 ./gradlew :app:installDebug               # build + install on connected device/emulator
 ./gradlew :app:lint                       # Android lint
+./gradlew :app:testDebugUnitTest          # JVM unit tests (app/src/test/kotlin)
 ```
 
-There is no test source set in this project currently (no `app/src/test` or `app/src/androidTest`).
-Validation is done by building, installing, and checking `adb logcat` for the `mTTD.*` tags
-(see INSTALL.md §7 for the diagnostic grep patterns per subsystem: `.Prices`, `.Service`, `.Poller`,
-`.Shizuku`).
+`app/src/test/kotlin` holds JUnit4 + MockK unit tests for pure-Kotlin domain logic (no Android
+framework dependency needed — `SessionAggregator` itself has zero `android.*` imports, so it runs
+directly on the JVM without Robolectric). `SessionAggregatorTest` is a regression suite built from
+real device-log-captured bug repros (first-sighting stacked-pickup undercounting, baseline/uuid
+slot-key mismatch overcounting, exchange pause coexistence) — when you fix a bug in the log-parsing
+state machine, add a test reproducing the exact line sequence that triggered it, not just a
+synthetic case. There is no `app/src/androidTest` (instrumented) suite; UI/Shizuku/overlay code
+still needs a real device — validate those by building, installing, and checking `adb logcat` for
+the `mTTD.*` tags (see INSTALL.md §7 for the diagnostic grep patterns per subsystem: `.Prices`,
+`.Service`, `.Poller`, `.Shizuku`).
 
 There's a separate offline verification harness at `phase0/workbench/` (git-ignored, not part of
 the public repo) that replays a captured device log through the parsing logic outside of Android —

@@ -88,6 +88,9 @@ android {
         getByName("main") {
             java.srcDirs("src/main/kotlin")
         }
+        getByName("test") {
+            java.srcDirs("src/test/kotlin")
+        }
     }
 }
 
@@ -150,4 +153,9 @@ dependencies {
 
     // Image loading
     implementation(libs.coil.compose)
+
+    // 단위 테스트 — SessionAggregator 는 순수 Kotlin(Android 의존성 없음)이라 JVM 테스트로 충분.
+    testImplementation(libs.junit)
+    testImplementation(libs.mockk)
+    testImplementation(libs.kotlinx.coroutines.test)
 }
