@@ -38,3 +38,8 @@ phase0/
 
 # scripts/capture-log.sh local checkpoint state
 .log-capture-mark
+
+# 로컬에만 두고 원격 저장소엔 커밋하지 않음 (팀 지침).
+CLAUDE.md
+scripts/
+app/src/test/
