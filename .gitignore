@@ -35,3 +35,6 @@ phase0/
 
 # Claude Code agent worktrees/state — local tooling artifacts, not project source
 .claude/
+
+# scripts/capture-log.sh local checkpoint state
+.log-capture-mark

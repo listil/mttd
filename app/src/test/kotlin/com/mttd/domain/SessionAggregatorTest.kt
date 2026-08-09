@@ -38,6 +38,21 @@ class SessionAggregatorTest {
     private fun quantityOf(itemId: String): Int? =
         aggregator.state.value.runs.lastOrNull()?.items?.firstOrNull { it.itemId == itemId }?.quantity
 
+    /**
+     * `scripts/capture-log.sh pull <name>` 로 저장한 실기기 로그 조각을 그대로 재생한다.
+     * baseline 은 fixture 안에 없을 수 있으므로(캡처가 이미 baseline 이후부터 시작) 필요하면
+     * 호출 전에 [establishBaseline] 을 먼저 호출할 것.
+     */
+    private fun replayFixture(name: String) {
+        val stream = requireNotNull(javaClass.classLoader?.getResourceAsStream("fixtures/$name.log")) {
+            "fixture 없음: app/src/test/resources/fixtures/$name.log " +
+                "(scripts/capture-log.sh pull $name 으로 생성)"
+        }
+        stream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+            lines.forEach { aggregator.observeLine(it) }
+        }
+    }
+
     @Test
     fun `baseline gating - Modfy before bag sort is not counted`() {
         aggregator.observeLine("ItemChange@ Update Id=100300_uuid1 BagNum=5 in PageId=102 SlotId=0")
@@ -206,6 +221,21 @@ class SessionAggregatorTest {
 
         assertEquals(0.0, aggregator.state.value.totalValue, 0.0001)
         assertTrue(aggregator.state.value.runs.isEmpty())
+    }
+
+    /**
+     * `scripts/capture-log.sh` 로 실기기에서 직접 캡처한 거래소 방문 구간 재생.
+     * 캡처된 원본에는 진입(Run) 마커보다 **먼저** 낙오된 Destory 한 번이 더 있었다
+     * (다른 팝업의 PageStack 에 AuctionHouseV2 가 부모로 걸려 있어서로 추정) —
+     * exitExchange() 의 `if (!inExchange) return` 가드가 이런 걸 안전하게 무시하는지도 같이 검증.
+     */
+    @Test
+    fun `replays a real exchange visit capture and ends outside the exchange`() {
+        establishBaseline()
+        replayFixture("exchange-visit")
+
+        assertFalse(aggregator.state.value.inExchange)
+        assertFalse(aggregator.state.value.paused)
     }
 
     @Test

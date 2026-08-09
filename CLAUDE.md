@@ -35,7 +35,25 @@ directly on the JVM without Robolectric). `SessionAggregatorTest` is a regressio
 real device-log-captured bug repros (first-sighting stacked-pickup undercounting, baseline/uuid
 slot-key mismatch overcounting, exchange pause coexistence) — when you fix a bug in the log-parsing
 state machine, add a test reproducing the exact line sequence that triggered it, not just a
-synthetic case. There is no `app/src/androidTest` (instrumented) suite; UI/Shizuku/overlay code
+synthetic case.
+
+**Capturing a real log window as a test fixture** — `scripts/capture-log.sh` formalizes the
+"checkpoint, reproduce in-game, diff" loop used to find and verify these bugs against a connected
+device:
+
+```bash
+scripts/capture-log.sh mark              # checkpoint the game log's current size
+# ... reproduce the behavior in-game ...
+scripts/capture-log.sh pull <name>       # saves the delta to app/src/test/resources/fixtures/<name>.log
+```
+
+(set `ADB_SERIAL` if more than one device/emulator is attached). In the test, `replayFixture(name)`
+loads the saved lines and feeds them through `observeLine()` exactly as `LogPoller` would — see
+`replays a real exchange visit capture...` for the pattern. Prefer this over hand-writing synthetic
+log lines whenever the bug came from a live device, since the real wire format has edge cases
+(stray/out-of-order marker lines, mid-batch ordering) that are easy to miss by hand.
+
+There is no `app/src/androidTest` (instrumented) suite; UI/Shizuku/overlay code
 still needs a real device — validate those by building, installing, and checking `adb logcat` for
 the `mTTD.*` tags (see INSTALL.md §7 for the diagnostic grep patterns per subsystem: `.Prices`,
 `.Service`, `.Poller`, `.Shizuku`).
