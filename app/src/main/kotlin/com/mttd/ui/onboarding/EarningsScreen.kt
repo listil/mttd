@@ -102,7 +102,16 @@ fun RunBarChart(
         return
     }
 
-    val maxAbs = runs.maxOf { kotlin.math.abs(it.totalValue) }.coerceAtLeast(1e-9)
+    val maxPositive = runs.filter { it.totalValue > 0 }.maxOfOrNull { it.totalValue } ?: 0.0
+    val maxNegative = runs.filter { it.totalValue < 0 }.maxOfOrNull { -it.totalValue } ?: 0.0
+    val hasNegative = maxNegative > 0.0
+    val maxAbs = kotlin.math.max(maxPositive, maxNegative).coerceAtLeast(1e-9)
+    // 양수/음수 영역 높이를 실제 최댓값 비율대로 나눈다. 예전엔 음수가 하나라도 있으면
+    // 무조건 38%(1 - 0.62)를 고정 배정해서, 음수 값이 아무리 작아도 그 영역이 불필요하게
+    // 크게 보였다. 한쪽이 극단적으로 작아도 완전히 안 보이진 않게 최소 비율은 남겨둔다.
+    val zeroFrac = if (hasNegative) {
+        (maxPositive / (maxPositive + maxNegative)).toFloat().coerceIn(0.08f, 0.92f)
+    } else 1f
     val density = LocalDensity.current
     // 막대 그래프와 아래 회차 번호 라벨이 같이 스크롤되도록 하나의 상태를 공유한다.
     val chartScrollState = rememberScrollState()
@@ -126,28 +135,28 @@ fun RunBarChart(
             SMALL_STEPS.firstOrNull { maxAbs / it <= 4 } ?: GRID_STEP
         }
     }
-    val hasNegative = runs.any { it.totalValue < 0 }
 
     Column(modifier = modifier) {
         Row {
-            // Y 축 눈금 라벨 (고정, 그래프와 함께 스크롤되지 않음)
+            // Y 축 눈금 라벨 (고정, 그래프와 함께 스크롤되지 않음) — 양수 영역 기준.
             Box(modifier = Modifier.height(chartH).width(38.dp)) {
-                val zeroFrac = if (hasNegative) 0.62f else 1f
-                var v = step
-                while (v <= maxAbs * 1.02) {
-                    val frac = (v / maxAbs).toFloat().coerceIn(0f, 1f) * 0.95f
-                    Text(
-                        formatAxis(v),
-                        modifier = Modifier.align(Alignment.TopEnd)
-                            .padding(
-                                top = ((chartH * (zeroFrac - frac * zeroFrac)) - 6.dp).coerceAtLeast(0.dp),
-                                end = 4.dp,
-                            ),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = gridLabelColor,
-                        maxLines = 1,
-                    )
-                    v += step
+                if (maxPositive > 0.0) {
+                    var v = step
+                    while (v <= maxPositive * 1.02) {
+                        val frac = (v / maxPositive).toFloat().coerceIn(0f, 1f) * 0.95f
+                        Text(
+                            formatAxis(v),
+                            modifier = Modifier.align(Alignment.TopEnd)
+                                .padding(
+                                    top = ((chartH * (zeroFrac - frac * zeroFrac)) - 6.dp).coerceAtLeast(0.dp),
+                                    end = 4.dp,
+                                ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = gridLabelColor,
+                            maxLines = 1,
+                        )
+                        v += step
+                    }
                 }
             }
             Row(
@@ -169,22 +178,30 @@ fun RunBarChart(
                 ) {
                     val slotPx = with(density) { (barW + gap).toPx() }
                     val barPx = with(density) { barW.toPx() }
-                    // 0 기준선: 양수는 위로, 음수는 아래로.
-                    val zeroY = if (hasNegative) size.height * 0.62f else size.height
+                    // 0 기준선: 양수는 위로, 음수는 아래로. 높이 배분은 zeroFrac(실제 최댓값 비율) 기준.
+                    val zeroY = size.height * zeroFrac
                     val usableUp = zeroY
                     val usableDown = size.height - zeroY
 
-                    // 가로 격자선
-                    var v = step
-                    while (v <= maxAbs * 1.02) {
-                        val frac = (v / maxAbs).toFloat().coerceIn(0f, 1f) * 0.95f
-                        val up = zeroY - frac * usableUp
-                        drawLine(gridColor, Offset(0f, up), Offset(size.width, up), strokeWidth = 1f)
-                        if (hasNegative) {
+                    // 가로 격자선 — 양수/음수 각자의 최댓값 기준으로 따로 그린다
+                    // (한쪽이 다른 쪽보다 훨씬 작으면 그만큼 격자선도 적게 그려짐).
+                    if (maxPositive > 0.0) {
+                        var v = step
+                        while (v <= maxPositive * 1.02) {
+                            val frac = (v / maxPositive).toFloat().coerceIn(0f, 1f) * 0.95f
+                            val up = zeroY - frac * usableUp
+                            drawLine(gridColor, Offset(0f, up), Offset(size.width, up), strokeWidth = 1f)
+                            v += step
+                        }
+                    }
+                    if (hasNegative) {
+                        var v = step
+                        while (v <= maxNegative * 1.02) {
+                            val frac = (v / maxNegative).toFloat().coerceIn(0f, 1f) * 0.95f
                             val down = zeroY + frac * usableDown
                             drawLine(gridColor, Offset(0f, down), Offset(size.width, down), strokeWidth = 1f)
+                            v += step
                         }
-                        v += step
                     }
 
                     // 0 기준선 (격자보다 진하게)
@@ -196,8 +213,9 @@ fun RunBarChart(
                     )
 
                     runs.forEachIndexed { i, run ->
-                        val ratio = (kotlin.math.abs(run.totalValue) / maxAbs).toFloat().coerceIn(0f, 1f)
                         val positive = run.totalValue >= 0
+                        val ownMax = if (positive) maxPositive else maxNegative
+                        val ratio = (kotlin.math.abs(run.totalValue) / ownMax).toFloat().coerceIn(0f, 1f)
                         val h = ratio * (if (positive) usableUp else usableDown) * 0.95f
                         val x = i * slotPx
                         val top = if (positive) zeroY - h else zeroY
