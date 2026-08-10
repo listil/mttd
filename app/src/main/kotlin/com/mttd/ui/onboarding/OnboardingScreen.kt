@@ -19,6 +19,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -145,10 +147,14 @@ fun OnboardingScreen(
                 }
             }
 
+            // 탭마다 독립된 스크롤 위치를 갖도록 tab 이 바뀌면 새 ScrollState 로 교체 —
+            // 하나의 ScrollState 를 공유하면 한 탭에서 내려놓은 스크롤 위치가 다른 탭에도
+            // 그대로 남아 위쪽 카드들이 화면 밖으로 밀려 안 보이는 문제가 있었다.
+            val scrollState = remember(tab) { androidx.compose.foundation.ScrollState(0) }
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scrollState)
                     .padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
@@ -169,8 +175,7 @@ fun OnboardingScreen(
                         if (state.ready) {
                             OverlayCard()
                             PriceCard()
-                            ProbeCard(userService = userService)
-                            LogTailCard(userService = userService)
+                            AdvancedSection(userService = userService)
                         } else {
                             Text(
                                 text = "Shizuku 준비 완료 후 나머지 설정이 활성화됩니다.",
@@ -253,6 +258,7 @@ private fun NotReadyNotice(onGoToSettings: () -> Unit) {
 }
 
 /** 수익 탭 맨 위 — 수익 숫자만. 세션 제어/상태는 설정 탭. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun EarningsSummaryCard() {
     val context = LocalContext.current
@@ -272,8 +278,17 @@ private fun EarningsSummaryCard() {
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
+            // 좁은 화면에서 숫자 + 버튼 2개가 한 줄에 안 들어가면 버튼 묶음이 통째로
+            // 다음 줄로 넘어간다. 버튼 묶음을 하나의 FlowRow 항목으로 묶고 SpaceBetween 을
+            // 써야 (넓은 화면에서) 예전처럼 카드 오른쪽 끝에 붙는다 — 버튼 두 개를 각각
+            // 별개 항목으로 두면 줄바꿈 안 될 때도 텍스트 바로 옆에 붙어버려서 안 예뻤다.
+            var confirmReset by remember { mutableStateOf(false) }
+            androidx.compose.foundation.layout.FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Column {
                     Text(
                         com.mttd.ui.overlay.formatFire(session.totalValue),
                         style = MaterialTheme.typography.headlineMedium,
@@ -286,14 +301,14 @@ private fun EarningsSummaryCard() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                // 오버레이까지 안 가도 앱에서 바로 제어
-                OutlinedButton(onClick = { service?.togglePause() }, enabled = service != null) {
-                    Text(if (session.paused) "▶ 재개" else "❚❚ 일시정지")
-                }
-                Spacer(Modifier.width(8.dp))
-                var confirmReset by remember { mutableStateOf(false) }
-                OutlinedButton(onClick = { confirmReset = true }, enabled = service != null) {
-                    Text("리셋")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // 오버레이까지 안 가도 앱에서 바로 제어
+                    OutlinedButton(onClick = { service?.togglePause() }, enabled = service != null) {
+                        Text(if (session.paused) "▶ 재개" else "❚❚ 일시정지")
+                    }
+                    OutlinedButton(onClick = { confirmReset = true }, enabled = service != null) {
+                        Text("리셋")
+                    }
                 }
                 if (confirmReset) {
                     // 같은 자리에서 버튼만 바뀌는 인라인 확인은 빠르게 두 번 탭하면
@@ -475,6 +490,41 @@ private fun StatusRow(label: String, ok: Boolean) {
     }
 }
 
+/**
+ * 로그 파일 프로브 / 폴링 raw 상태 — 일반 유저에겐 의미 없는 개발자 진단 정보라
+ * 기본 접힘 상태로 숨겨두고, 필요할 때만 펼쳐서 본다.
+ */
+@Composable
+private fun AdvancedSection(userService: () -> IUserService?) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("고급", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "로그 파일 진단 · 폴링 상태 (개발자용)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                contentDescription = if (expanded) "접기" else "펼치기",
+            )
+        }
+        if (expanded) {
+            ProbeCard(userService = userService)
+            LogTailCard(userService = userService)
+        }
+    }
+}
+
 @Composable
 private fun ProbeCard(userService: () -> IUserService?) {
     var installedGames by remember { mutableStateOf("(조회 중...)") }
@@ -632,6 +682,11 @@ private fun RecentLines(flow: SharedFlow<String>?) {
 private fun OverlayCard() {
     val context = LocalContext.current
     var canDraw by remember { mutableStateOf(android.provider.Settings.canDrawOverlays(context)) }
+    val prefs = remember(context) { com.mttd.data.prefs.OverlayPrefs(context.applicationContext) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val badgeMetricId by prefs.badgeIncomeMetric.collectAsStateWithLifecycle(
+        initialValue = com.mttd.ui.overlay.BadgeIncomeMetric.DEFAULT.id,
+    )
 
     // 앱이 다시 포그라운드로 올 때 권한 상태 재확인
     LaunchedEffect(Unit) {
@@ -672,6 +727,39 @@ private fun OverlayCard() {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            HorizontalDivider()
+            Text(
+                "배지 2번째 줄 표시값",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            BadgeMetricSelector(
+                current = com.mttd.ui.overlay.BadgeIncomeMetric.fromId(badgeMetricId),
+                onSelect = { m -> scope.launch { prefs.setBadgeIncomeMetric(m.id) } },
+            )
+        }
+    }
+}
+
+/** 배지(아이콘 오버레이) 2번째 줄에 어떤 수익 지표를 보여줄지 선택. 1번째 줄(경과 시간)은 고정. */
+@Composable
+private fun BadgeMetricSelector(
+    current: com.mttd.ui.overlay.BadgeIncomeMetric,
+    onSelect: (com.mttd.ui.overlay.BadgeIncomeMetric) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        for (m in com.mttd.ui.overlay.BadgeIncomeMetric.entries) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(selected = current == m, onClick = { onSelect(m) })
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = current == m, onClick = { onSelect(m) })
+                Text(m.label, style = MaterialTheme.typography.bodyMedium)
             }
         }
     }

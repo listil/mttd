@@ -24,6 +24,15 @@ class OverlayPrefs(private val context: Context) {
         context.dataStore.edit { it[KEY_PRICE_SOURCE] = id }
     }
 
+    /** 배지(아이콘 오버레이) 2번째 줄에 표시할 수익 지표. 값은 [com.mttd.ui.overlay.BadgeIncomeMetric.id]. */
+    val badgeIncomeMetric: Flow<String> = context.dataStore.data.map {
+        it[KEY_BADGE_METRIC] ?: com.mttd.ui.overlay.BadgeIncomeMetric.DEFAULT.id
+    }
+
+    suspend fun setBadgeIncomeMetric(id: String) {
+        context.dataStore.edit { it[KEY_BADGE_METRIC] = id }
+    }
+
     val iconX: Flow<Int> = context.dataStore.data.map { it[KEY_ICON_X] ?: 60 }
     val iconY: Flow<Int> = context.dataStore.data.map { it[KEY_ICON_Y] ?: 300 }
     val hudX: Flow<Int> = context.dataStore.data.map { it[KEY_HUD_X] ?: 60 }
@@ -62,5 +71,6 @@ class OverlayPrefs(private val context: Context) {
         private val KEY_HUD_ALPHA = floatPreferencesKey("hud_alpha")
         private val KEY_HUD_VISIBLE = booleanPreferencesKey("hud_visible")
         private val KEY_PRICE_SOURCE = androidx.datastore.preferences.core.stringPreferencesKey("price_source")
+        private val KEY_BADGE_METRIC = androidx.datastore.preferences.core.stringPreferencesKey("badge_income_metric")
     }
 }

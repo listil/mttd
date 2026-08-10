@@ -154,8 +154,8 @@ fun HudOverlay(
                     )
                 }
                 HudStat("경과", formatElapsed(elapsed))
-                HudStat("총 수익", formatFire(session.totalValue) + " (${formatFire(session.netTotalValue)})")
-                HudStat("시간당", formatFire(incomePerHour) + "/h (${formatFire(netIncomePerHour)}/h)")
+                HudStat("총 수익", formatFire(session.totalValue) + " (${formatFire(session.netTotalValue)} TAX)")
+                HudStat("시간당", formatFire(incomePerHour) + "/h (${formatFire(netIncomePerHour)}/h TAX)")
                 HudStat("맵 진입", "${session.mapsEntered}")
 
                 Spacer(Modifier.height(1.dp))
