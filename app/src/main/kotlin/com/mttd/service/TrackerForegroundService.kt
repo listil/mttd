@@ -151,9 +151,14 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
         offsetStore = OffsetStore(applicationContext)
         itemInfo = ItemInfoLookup(applicationContext)
         overlayPrefs = OverlayPrefs(applicationContext)
-        priceRepo = PriceRepository(PriceApi())
+        priceRepo = PriceRepository(PriceApi(), onTtdItemsFetched = { items ->
+            val extra = items.mapValues { (_, item) ->
+                ItemInfoLookup.ItemInfo(name = item.name, type = item.type)
+            }
+            itemInfo.mergeGapFill(extra)
+        })
         observedPrices = com.mttd.data.prices.ObservedPriceStore()
-        runRepo = com.mttd.data.runs.RunRepository(applicationContext)
+        runRepo = com.mttd.data.runs.RunRepository(applicationContext, itemInfo)
         aggregator = SessionAggregator(
             itemInfo = itemInfo,
             valueCalculator = ValueCalculator(priceRepo, observedPrices),

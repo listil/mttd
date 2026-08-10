@@ -18,6 +18,12 @@ import kotlinx.coroutines.sync.withLock
 class PriceRepository(
     private val api: PriceApi,
     private val ttdApi: TtdPriceApi = TtdPriceApi(),
+    /**
+     * TTD 응답의 name/type 은 가격 계산엔 안 쓰지만 [refreshTtd] 가 어차피 fetch 하는
+     * 부산물이라, 새 아이템 이름 사전(gap-fill) 을 채우고 싶은 쪽(ItemInfoLookup)에
+     * 넘겨준다. TTD 가 실제로 fetch 될 때만 호출됨 — 이걸 위해 별도 네트워크 호출은 없음.
+     */
+    private val onTtdItemsFetched: (Map<String, TtdPriceApi.Item>) -> Unit = {},
 ) {
 
     private val fetchLock = Mutex()
@@ -73,6 +79,7 @@ class PriceRepository(
         _state.value = _state.value.copy(loading = true, lastError = null)
         try {
             val items = ttdApi.fetchPrices()
+            onTtdItemsFetched(items)
             val map = HashMap<String, Float>(items.size)
             for ((id, item) in items) map[id] = item.price
             // 가치 기준 단위는 항상 최초의 불꽃 결정 = 1.
