@@ -47,8 +47,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mttd.IUserService
@@ -209,35 +212,82 @@ private fun UpdateBanner() {
     val u = update ?: return
     var dismissed by remember(u.versionName) { mutableStateOf(false) }
     if (dismissed) return
+    // 새 버전이 있다는 건 바로 보여야 하니 기본은 펼침 — 확인했으면 접어서 화면을 차지 않게.
+    var expanded by remember(u.versionName) { mutableStateOf(true) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text("⬆️ 새 버전 ${u.versionName}", fontWeight = FontWeight.SemiBold)
-            Text(
-                "현재 ${com.mttd.BuildConfig.VERSION_NAME}" +
-                    if (u.apkSizeBytes > 0) "  ·  APK %.1f MB".format(u.apkSizeBytes / 1024.0 / 1024.0) else "",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (u.notes.isNotBlank()) {
-                Text(u.notes, style = MaterialTheme.typography.bodySmall, maxLines = 6)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "⬆️ 새 버전 ${u.versionName}",
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (expanded) "접기" else "펼치기",
+                )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    val i = android.content.Intent(
-                        android.content.Intent.ACTION_VIEW,
-                        android.net.Uri.parse(u.apkUrl ?: u.releaseUrl),
-                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(i)
-                }) { Text(if (u.apkUrl != null) "APK 다운로드" else "릴리스 열기") }
-                OutlinedButton(onClick = { dismissed = true }) { Text("나중에") }
+            if (expanded) {
+                Text(
+                    "현재 ${com.mttd.BuildConfig.VERSION_NAME}" +
+                        if (u.apkSizeBytes > 0) "  ·  APK %.1f MB".format(u.apkSizeBytes / 1024.0 / 1024.0) else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (u.notes.isNotBlank()) {
+                    Text(parseSimpleMarkdown(u.notes), style = MaterialTheme.typography.bodySmall, maxLines = 6)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        val i = android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse(u.apkUrl ?: u.releaseUrl),
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(i)
+                    }) { Text(if (u.apkUrl != null) "APK 다운로드" else "릴리스 열기") }
+                    OutlinedButton(onClick = { dismissed = true }) { Text("나중에") }
+                }
             }
         }
     }
 }
+
+/**
+ * "**굵게**" 만 지원하는 아주 단순한 마크다운 파서.
+ *
+ * GitHub 릴리스 노트는 "- ✨ **제목**: 설명" 형식만 쓰므로 이 정도면 충분하고,
+ * 마크다운 라이브러리를 새로 추가할 이유는 없다.
+ */
+private fun parseSimpleMarkdown(text: String): androidx.compose.ui.text.AnnotatedString =
+    buildAnnotatedString {
+        var i = 0
+        while (i < text.length) {
+            val start = text.indexOf("**", i)
+            if (start == -1) {
+                append(text.substring(i))
+                break
+            }
+            append(text.substring(i, start))
+            val end = text.indexOf("**", start + 2)
+            if (end == -1) {
+                append(text.substring(start))
+                break
+            }
+            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                append(text.substring(start + 2, end))
+            }
+            i = end + 2
+        }
+    }
 
 @Composable
 private fun NotReadyNotice(onGoToSettings: () -> Unit) {
