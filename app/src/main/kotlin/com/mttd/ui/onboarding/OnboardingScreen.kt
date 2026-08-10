@@ -84,6 +84,7 @@ fun OnboardingScreen(
     state: ShizukuState,
     onRequestPermission: () -> Unit,
     userService: () -> IUserService?,
+    onReopenWizard: () -> Unit = {},
 ) {
     var tab by remember { mutableStateOf(MainTab.EARNINGS) }
     val context = LocalContext.current
@@ -175,8 +176,11 @@ fun OnboardingScreen(
                     }
                     MainTab.SETTINGS -> {
                         ShizukuStatusCard(state = state, onRequestPermission = onRequestPermission)
+                        // 오버레이 권한은 Shizuku 와 무관(userService 안 씀)해서 게이트 밖으로 뺐다 —
+                        // 안 그러면 재부팅으로 Shizuku 가 죽었을 때 이미 켜둔 오버레이 설정을
+                        // 확인/조정할 카드 자체가 통째로 사라져 보인다.
+                        OverlayCard()
                         if (state.ready) {
-                            OverlayCard()
                             PriceCard()
                             AdvancedSection(userService = userService)
                         } else {
@@ -186,6 +190,7 @@ fun OnboardingScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        TextButton(onClick = onReopenWizard) { Text("설정 가이드 다시 보기") }
                         ExitCard()
                     }
                 }
@@ -212,8 +217,8 @@ private fun UpdateBanner() {
     val u = update ?: return
     var dismissed by remember(u.versionName) { mutableStateOf(false) }
     if (dismissed) return
-    // 새 버전이 있다는 건 바로 보여야 하니 기본은 펼침 — 확인했으면 접어서 화면을 차지 않게.
-    var expanded by remember(u.versionName) { mutableStateOf(true) }
+    // 기본은 접힘 — 새 버전이 있다는 것만 한 줄로 알리고, 자세한 내용은 탭해서 펼쳐 보게.
+    var expanded by remember(u.versionName) { mutableStateOf(false) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(

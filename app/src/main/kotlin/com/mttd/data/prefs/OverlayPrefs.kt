@@ -40,6 +40,13 @@ class OverlayPrefs(private val context: Context) {
     val hudAlpha: Flow<Float> = context.dataStore.data.map { it[KEY_HUD_ALPHA] ?: 0.85f }
     val hudVisible: Flow<Boolean> = context.dataStore.data.map { it[KEY_HUD_VISIBLE] ?: false }
 
+    /** 최초 설정 가이드(마법사)를 완료했거나 건너뛴 적 있으면 true. */
+    val wizardCompleted: Flow<Boolean> = context.dataStore.data.map { it[KEY_WIZARD_COMPLETED] ?: false }
+
+    suspend fun setWizardCompleted(v: Boolean) {
+        context.dataStore.edit { it[KEY_WIZARD_COMPLETED] = v }
+    }
+
     suspend fun setIconPosition(x: Int, y: Int) {
         context.dataStore.edit {
             it[KEY_ICON_X] = x
@@ -70,6 +77,7 @@ class OverlayPrefs(private val context: Context) {
         private val KEY_HUD_Y = intPreferencesKey("hud_y")
         private val KEY_HUD_ALPHA = floatPreferencesKey("hud_alpha")
         private val KEY_HUD_VISIBLE = booleanPreferencesKey("hud_visible")
+        private val KEY_WIZARD_COMPLETED = booleanPreferencesKey("wizard_completed")
         private val KEY_PRICE_SOURCE = androidx.datastore.preferences.core.stringPreferencesKey("price_source")
         private val KEY_BADGE_METRIC = androidx.datastore.preferences.core.stringPreferencesKey("badge_income_metric")
     }
