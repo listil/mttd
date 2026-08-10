@@ -133,6 +133,9 @@ class OverlayHost(
                 onRefreshHoldings = {
                     com.mttd.TrackerApplication.instance.trackerService.value?.refreshHoldings()
                 },
+                onReset = {
+                    com.mttd.TrackerApplication.instance.trackerService.value?.resetSession()
+                },
             )
         }
         attachDragBehavior(

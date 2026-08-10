@@ -3,6 +3,7 @@ package com.mttd.ui.overlay
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,11 +38,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -52,6 +57,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.mttd.domain.models.SessionState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 
 /** 목록에 한 번에 보일 줄 수. 이보다 많으면 목록 안에서 스크롤. */
@@ -70,6 +76,7 @@ fun HudOverlay(
     onOpenSettings: () -> Unit = {},
     onTogglePause: () -> Unit = {},
     onRefreshHoldings: () -> Unit = {},
+    onReset: () -> Unit = {},
 ) {
     val session by sessionState.collectAsStateWithLifecycle()
     val prices = priceState?.collectAsStateWithLifecycle()?.value
@@ -118,12 +125,18 @@ fun HudOverlay(
                     // 새로고침은 리셋이 아니라 보유 아이템 가치 재계산이어야 한다.
                     HudMaterialIconButton(Icons.Filled.Refresh, onRefreshHoldings)
                 } else {
-                    // 리셋은 여기서 뺐다 — 오버레이는 작고 드래그 중에도 탭이 쉽게 튀어서
-                    // 확인 없는 되돌릴 수 없는 동작을 두기엔 위험하다. 리셋은 앱 쪽(확인 팝업 있음)에서만.
                     HudMaterialIconButton(
                         if (session.paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
                         onTogglePause,
                     )
+                    Spacer(Modifier.width(3.dp))
+                    // 앱 쪽 "리셋" 버튼과 아이콘을 맞춰 새로고침(순환 화살표) 모양을 쓴다 — 거래소
+                    // 모드의 Refresh(위 126줄, 보유 아이템 가치 재계산)와는 다른 동작이지만 동시에
+                    // 같이 뜨지 않으므로 혼동 없음. 짧은 탭으론 아무 일도 안 나게 하고 롱프레스에만
+                    // 반응한다 — 오버레이는 작고 드래그 중에도 탭이 쉽게 튀어서, 되돌릴 수 없는
+                    // 동작을 일반 탭 버튼으로 두면 위험하다. 배지 자체도 "짧게=토글 / 길게=드래그"로
+                    // 롱프레스를 의도적 동작 신호로 쓰고 있어서 같은 문법.
+                    HudLongPressIconButton(Icons.Filled.Refresh, onReset)
                 }
                 Spacer(Modifier.width(3.dp))
                 HudMaterialIconButton(Icons.Filled.Close, onCollapse)
@@ -328,6 +341,48 @@ private fun HudMaterialIconButton(icon: ImageVector, onClick: () -> Unit) {
         )
     }
 }
+
+/**
+ * [HudMaterialIconButton] 과 달리 짧은 탭엔 반응하지 않고 롱프레스에서만 [onLongClick] 을 부른다.
+ * 리셋처럼 되돌릴 수 없는 동작을 실수 탭으로부터 보호하기 위한 용도 — 별도 확인 팝업 없이
+ * "누르고 있어야 발동"하는 제스처 자체가 확인 역할을 한다.
+ *
+ * 시스템 기본 롱프레스 임계값(~500ms)은 실수로도 걸리기 쉬워서 [LONG_PRESS_MS] 로 직접
+ * 늘려 잡는다 — `combinedClickable` 은 이 시간을 커스텀할 방법이 없어 `pointerInput` 으로
+ * 직접 구현. 발동 시 진동으로도 확인해준다.
+ */
+@Composable
+private fun HudLongPressIconButton(icon: ImageVector, onLongClick: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    Box(
+        modifier = Modifier
+            .size(24.dp)
+            .pointerInput(onLongClick) {
+                detectTapGestures(
+                    onPress = {
+                        val armed = scope.launch {
+                            delay(LONG_PRESS_MS)
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onLongClick()
+                        }
+                        tryAwaitRelease()
+                        armed.cancel()
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = Color(0xFFF87171),
+            modifier = Modifier.size(16.dp),
+        )
+    }
+}
+
+private const val LONG_PRESS_MS = 1000L
 
 @Composable
 private fun HudIconButton(
