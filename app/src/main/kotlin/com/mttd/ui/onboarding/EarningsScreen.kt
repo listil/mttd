@@ -66,17 +66,9 @@ private const val GRID_STEP = 50.0
 /** 수익이 [GRID_STEP] 미만일 때 쓰는 눈금 후보 (1-2-5 계열). */
 private val SMALL_STEPS = doubleArrayOf(0.5, 1.0, 2.0, 5.0, 10.0, 20.0)
 
-/** 축 라벨용 — 소수점 이하가 없으면 떼고 짧게. (50.00 → 50, 2000 → 2k) */
+/** 축 라벨용 — 소수점 이하가 없으면 떼고, 천 단위 구분자로 정확한 수치를 보여준다. (50.00 → 50, 2000 → 2,000) */
 private fun formatAxis(v: Double): String {
-    val a = kotlin.math.abs(v)
-    return when {
-        a >= 1000.0 -> {
-            val k = v / 1000.0
-            if (k == k.toLong().toDouble()) "${k.toLong()}k" else "%.1fk".format(k)
-        }
-        v == v.toLong().toDouble() -> v.toLong().toString()
-        else -> "%.1f".format(v)
-    }
+    return if (v == v.toLong().toDouble()) "%,d".format(v.toLong()) else "%,.1f".format(v)
 }
 
 /**
@@ -139,7 +131,8 @@ fun RunBarChart(
     Column(modifier = modifier) {
         Row {
             // Y 축 눈금 라벨 (고정, 그래프와 함께 스크롤되지 않음) — 양수 영역 기준.
-            Box(modifier = Modifier.height(chartH).width(38.dp)) {
+            // k 축약 없이 천단위 구분자로 정확한 수치를 보여주므로 자릿수가 늘어날 걸 감안해 폭을 넉넉히.
+            Box(modifier = Modifier.height(chartH).width(52.dp)) {
                 if (maxPositive > 0.0) {
                     var v = step
                     while (v <= maxPositive * 1.02) {
@@ -214,7 +207,10 @@ fun RunBarChart(
 
                     runs.forEachIndexed { i, run ->
                         val positive = run.totalValue >= 0
-                        val ownMax = if (positive) maxPositive else maxNegative
+                        // maxPositive/maxNegative 는 해당 부호의 회차가 하나도 없으면 0.0 —
+                        // totalValue==0.0 인 회차가 그 부호 쪽으로 분류되면 0.0/0.0 = NaN 이 되어
+                        // drawRect 에 NaN 크기가 들어가던 버그. 옛 maxAbs 처럼 coerceAtLeast 로 방지.
+                        val ownMax = (if (positive) maxPositive else maxNegative).coerceAtLeast(1e-9)
                         val ratio = (kotlin.math.abs(run.totalValue) / ownMax).toFloat().coerceIn(0f, 1f)
                         val h = ratio * (if (positive) usableUp else usableDown) * 0.95f
                         val x = i * slotPx
@@ -230,7 +226,7 @@ fun RunBarChart(
             }
         }
         // 회차 번호 라벨 (막대와 같은 폭으로 정렬, 같은 스크롤 상태 공유)
-        Row(modifier = Modifier.horizontalScroll(chartScrollState).padding(start = 38.dp)) {
+        Row(modifier = Modifier.horizontalScroll(chartScrollState).padding(start = 52.dp)) {
             runs.forEach { run ->
                 Text(
                     "${run.index}",
