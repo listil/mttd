@@ -440,15 +440,18 @@ internal fun formatElapsed(ms: Long): String {
     }
 }
 
-/** 게임 통화 표시. 매우 작은 값(0.01 이하)부터 큰 값(수백만) 까지 대응. */
+/**
+ * 게임 통화 표시. 매우 작은 값(0.01 이하)부터 큰 값(수백만) 까지 대응.
+ *
+ * 예전엔 1만 이상을 k/M 으로 축약했는데, 회차별 수익 그래프 Y축과 마찬가지로 정확한 수치가
+ * 더 보기 좋다는 피드백으로 축약 없이 천단위 구분자(%,.0f)로 그대로 보여준다.
+ */
 internal fun formatFire(v: Double): String {
     val abs = kotlin.math.abs(v)
     return when {
         abs == 0.0 -> "0"
         abs < 1.0 -> "%.4f".format(v)
         abs < 100.0 -> "%.2f".format(v)
-        abs < 10_000.0 -> "%,.0f".format(v)
-        abs < 1_000_000.0 -> "%.1fk".format(v / 1_000.0)
-        else -> "%.2fM".format(v / 1_000_000.0)
+        else -> "%,.0f".format(v)
     }
 }
