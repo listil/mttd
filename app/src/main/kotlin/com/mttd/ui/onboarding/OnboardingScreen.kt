@@ -182,6 +182,7 @@ fun OnboardingScreen(
                         OverlayCard()
                         if (state.ready) {
                             PriceCard()
+                            LoadoutExportCard()
                             AdvancedSection(userService = userService)
                         } else {
                             Text(
@@ -842,6 +843,120 @@ private fun BadgeMetricSelector(
                 Text(m.label, style = MaterialTheme.typography.bodyMedium)
             }
         }
+    }
+}
+
+/**
+ * 캐릭터 장비/스킬/석판/천명/핵심 재능/프리즘 정보를 미니 토치DB([Mli1Codec]) 로 내보내는 카드.
+ *
+ * [CharacterLoadoutTracker] 는 로그인 직후 한 번 오는 `GetPlayerData` 전체 동기화를 관측해야
+ * 채워지므로, 앱을 켠 뒤로 게임에 재접속한 적이 없으면 비어 있을 수 있다 — 그 경우 안내만 하고
+ * 버튼은 계속 눌러볼 수 있게 둔다(재시도 비용이 없으므로).
+ *
+ * `logimport` 처리는 수신 사이트가 브라우저 로컬스토리지에서 처리하는 순수 클라이언트 동작이라
+ * (서버는 정적 SPA 셸만 내려줌), 앱이 직접 HTTP 요청을 보내는 방식으론 프리셋이 생성되지 않는다.
+ * 그래서 URL 만 만들어 시스템 브라우저로 넘긴다 — 이 앱 프로세스가 mini-tlidb.winterer.workers.dev
+ * 로 직접 통신하는 게 아니므로 README/INSTALL 의 네트워크 호스트 목록에 추가할 필요도 없다.
+ */
+@Composable
+private fun LoadoutExportCard() {
+    val context = LocalContext.current
+    val app = context.applicationContext as TrackerApplication
+    val service by app.trackerService.collectAsStateWithLifecycle()
+    val loadout by (service?.loadoutState ?: MutableStateFlow(null))
+        .collectAsStateWithLifecycle()
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("캐릭터 장비 내보내기", fontWeight = FontWeight.SemiBold)
+            Text(
+                "캐릭터 빌드 정보를 미니 토치DB로 보냅니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            if (loadout == null) {
+                Text(
+                    "① 로그 오픈 → ② 게임에서 로그아웃 후 재접속",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            } else {
+                LoadoutPreview(loadout!!)
+            }
+
+            var copied by remember { mutableStateOf(false) }
+
+            // URL이 매번 달라져도(nonce, CharacterLoadout.nonce 참조) 두 번째 클릭부터 안 열렸는데,
+            // 이미 열려서 멈춰있는 그 탭에서 *같은* 주소를 수동으로 다시 커밋하면 정상 로드됐다 —
+            // 즉 URL 내용 문제가 아니라 앱 -> 크롬으로 인텐트를 두 번째 보내는 것 자체가 새 탐색을
+            // 못 일으키는 문제였다. 이 파일의 다른 브라우저 오픈 인텐트(업데이트 다운로드 링크,
+            // GitHub 링크, 오버레이 권한 설정)는 전부 FLAG_ACTIVITY_NEW_TASK 를 붙이는데 이 버튼만
+            // 빠져있었다 — Activity 컨텍스트라 첫 실행은 문제없이 되지만(크롬이 singleTask라
+            // 런치모드가 알아서 자기 태스크로 보내줌), 이미 존재하는 태스크를 재선택해 앞으로
+            // 가져오는 경로에서는 (특히 이 기종의 커스텀 윈도우 매니저에서) NEW_TASK 없이는
+            // onNewIntent 로 진짜 새 탐색이 안 걸리는 것으로 보인다. 다른 세 곳과 동일하게 플래그를
+            // 맞췄다.
+            fun saltedUrl() = com.mttd.data.export.Mli1Codec.buildUrl(
+                loadout!!.copy(src = "mTTD", nonce = System.currentTimeMillis().toString(36)),
+            )
+
+            Button(
+                enabled = loadout != null,
+                onClick = {
+                    val i = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(saltedUrl()))
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(i)
+                },
+            ) { Text("미니 토치DB로 내보내기") }
+
+            TextButton(
+                enabled = loadout != null,
+                onClick = {
+                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("mini-tlidb logimport URL", saltedUrl()))
+                    copied = true
+                },
+            ) { Text("(안 열리면) 주소만 복사해서 직접 붙여넣기") }
+
+            if (copied) {
+                Text(
+                    "URL이 클립보드에 복사됐습니다. 브라우저에서 새 탭을 열고 주소창에 붙여넣어 주세요.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 실제로 뭐가 전송될지 미리 볼 수 있게 요약. 사용자가 "진짜 지금 장비가 맞는지" 브라우저를
+ * 열기 전에 앱 안에서 확인할 수 있는 유일한 지점이라 — 이 방식은 서버 응답을 못 받으므로
+ * (LoadoutExportCard 주석 참조) 전송 성공/실패는 여기서 확인할 수 없고, 이 미리보기가
+ * "보낼 데이터가 맞는지"의 유일한 확인 수단이다.
+ */
+@Composable
+private fun LoadoutPreview(loadout: com.mttd.data.export.CharacterLoadout) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            loadout.char ?: "(이름 없음)",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "장비 ${loadout.gear?.size ?: 0}개 · 스킬 ${loadout.skills?.size ?: 0}개 · " +
+                "석판 노드 ${loadout.slate?.size ?: 0}개 · 천명 ${loadout.dst?.size ?: 0}개 · " +
+                "핵심 재능 ${loadout.genius?.core?.size ?: 0}개 · " +
+                "프리즘 ${if (loadout.prism != null) 1 else 0}개 · " +
+                "히어로 추억 ${loadout.mems?.size ?: 0}개",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

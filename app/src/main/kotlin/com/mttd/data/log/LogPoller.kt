@@ -42,8 +42,15 @@ class LogPoller(
 
     private val _lines = MutableSharedFlow<String>(
         replay = 0,
-        extraBufferCapacity = 1024,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        // `GetPlayerData` 같은 대형 Socket 응답(CharacterLoadoutTracker 참조)은 한 청크(256KB)에
+        // 수천 개의 짧은 `+key [value]` 줄이 실려 오는데, DROP_OLDEST + tryEmit 조합으로는
+        // 소비 측이 못 따라갈 때 줄이 조용히 버려진다 — 처음엔 블록 시작 마커까지 씹혀서 캐릭터
+        // 스냅샷이 아예 안 잡혔고, 버퍼를 1024→16384 로 키운 뒤엔 시작은 잡히는데 블록 앞쪽
+        // (skillLayout 등) 라인이 드문드문 드롭돼 재로그인마다 스킬 목록이 들쭉날쭉해지는
+        // 형태로 재현됐다 — 둘 다 실기기에서 확인. 버퍼 크기로는 근본 해결이 안 되므로
+        // SUSPEND 로 바꿔서 emit() 이 진짜 백프레셔를 걸게 한다 (드롭 자체가 안 남).
+        extraBufferCapacity = 16384,
+        onBufferOverflow = BufferOverflow.SUSPEND,
     )
     val lines: SharedFlow<String> = _lines.asSharedFlow()
 
@@ -152,7 +159,12 @@ class LogPoller(
                     for (i in 0 until completeCount) {
                         val line = parts[i]
                         if (line.isEmpty()) continue
-                        _lines.tryEmit(line)
+                        // tryEmit 은 버퍼가 꽉 차면 DROP_OLDEST 로 조용히 라인을 버린다 — 픽업/맵진입
+                        // 처럼 짧은 버스트에선 안 걸렸지만, GetPlayerData 처럼 한 청크에 수천 줄이
+                        // 몰리는 대형 응답(CharacterLoadoutTracker 참조)에선 소비 측이 못 따라갈 때
+                        // 블록 앞쪽 줄(예: skillLayout)이 실기기에서 실제로 드롭됐다 — 버퍼를 아무리
+                        // 키워도 근본 해결이 안 돼 suspend emit 으로 백프레셔를 걸어 드롭을 없앴다.
+                        _lines.emit(line)
                         lineCount++
                     }
 
@@ -161,7 +173,7 @@ class LogPoller(
                     if (!endsWithNewline && parts.isNotEmpty()) {
                         val tail = parts.last()
                         if (tail.length > MAX_TAIL_BYTES) {
-                            _lines.tryEmit(tail)
+                            _lines.emit(tail)
                             lineCount++
                         } else {
                             pendingTail.append(tail)

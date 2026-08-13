@@ -65,6 +65,16 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
     private lateinit var runRepo: com.mttd.data.runs.RunRepository
     private var overlay: OverlayHost? = null
     private val assembler = MessageAssembler()
+    private val characterLoadoutTracker = com.mttd.domain.CharacterLoadoutTracker()
+
+    /**
+     * 마지막으로 관측된 캐릭터 장비/스킬/석판 스냅샷. 로그인 직후 한 번 오는 `GetPlayerData`
+     * 전체 동기화를 파싱한 결과라, 앱을 켠 뒤 게임에 재접속(또는 로그인)해야 채워진다 —
+     * [com.mttd.domain.CharacterLoadoutTracker] 클래스 주석 참조.
+     */
+    val loadoutState: StateFlow<com.mttd.data.export.CharacterLoadout?> get() = characterLoadoutTracker.loadout
+    fun currentLoadout(): com.mttd.data.export.CharacterLoadout? = characterLoadoutTracker.latestLoadout
+    fun currentLoadoutSyncedAtMs(): Long = characterLoadoutTracker.latestSyncAtMs
 
     val priceState get() = priceRepo.state
     fun priceRepository(): PriceRepository = priceRepo
@@ -342,6 +352,7 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
                 if (_lines.subscriptionCount.value > 0) _lines.tryEmit(line)
                 // 라인 단위 관측 (맵 코드네임 등 assembler 밖 컨텍스트)
                 aggregator.observeLine(line)
+                characterLoadoutTracker.observeLine(line)
                 // 필터 통과분만 assembler 에 공급
                 if (!LogLineFilter.shouldExclude(line)) {
                     assembler.feed(line)?.let { msg -> aggregator.consume(msg) }
