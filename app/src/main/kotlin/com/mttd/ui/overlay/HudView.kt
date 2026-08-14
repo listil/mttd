@@ -3,6 +3,7 @@ package com.mttd.ui.overlay
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -46,6 +48,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -81,6 +84,19 @@ fun HudOverlay(
     val session by sessionState.collectAsStateWithLifecycle()
     val prices = priceState?.collectAsStateWithLifecycle()?.value
 
+    // 0 = 수익 화면, 1 = 보유 아이템(인벤토리 시세) 화면. 거래소 진입/퇴장 때는 지금까지처럼
+    // 자동으로 맞는 화면으로 넘어가고(아래 LaunchedEffect), 그 상태가 유지되는 동안엔 좌우로
+    // 드래그해서 수동으로도 넘길 수 있다 — 배지의 "짧게=탭 / 길게=드래그"와 같은 문법으로,
+    // 빠른 스와이프는 400ms 롱프레스 임계값 전에 끝나서 OverlayHost.attachDragBehavior 의
+    // 창-이동 롱프레스와 겹치지 않는다(그쪽은 롱프레스 전 이동엔 항상 false 를 리턴해 이 안의
+    // pointerInput 으로 그대로 흘려보낸다).
+    var page by remember { mutableStateOf(if (session.inExchange) 1 else 0) }
+    LaunchedEffect(session.inExchange) {
+        page = if (session.inExchange) 1 else 0
+    }
+    val density = LocalDensity.current
+    val swipeThresholdPx = remember(density) { with(density) { 40.dp.toPx() } }
+
     // 시간이 실제로 흐를 때만 1 초 틱을 돌린다 (일시정지·집계 대기 중엔 정지).
     val ticking = session.active && !session.paused && session.baselineReady
     var tick by remember { mutableStateOf(0) }
@@ -102,6 +118,20 @@ fun HudOverlay(
             .fillMaxWidth()
             .background(Color(0xFF0F172A).copy(alpha = 0.9f), RoundedCornerShape(12.dp))
             .border(1.dp, Color(0xFFE2E8F0).copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+            .pointerInput(Unit) {
+                var dragTotal = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { dragTotal = 0f },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        dragTotal += dragAmount
+                    },
+                    onDragEnd = {
+                        if (dragTotal <= -swipeThresholdPx) page = 1
+                        else if (dragTotal >= swipeThresholdPx) page = 0
+                    },
+                )
+            }
             .padding(10.dp),
     ) {
         Column(
@@ -118,31 +148,40 @@ fun HudOverlay(
                 }
                 Text(statusText, color = Color(0xFFCBD5E1), fontSize = 10.sp)
                 Spacer(Modifier.fillMaxWidth().weight(1f))
+                // 좌우 드래그로 화면이 두 개(수익/보유) 있다는 걸 알려주는 점 두 개.
+                Text(
+                    if (page == 0) "●○" else "○●",
+                    color = Color(0xFF64748B),
+                    fontSize = 8.sp,
+                )
+                Spacer(Modifier.width(6.dp))
                 HudMaterialIconButton(Icons.Filled.Settings, onOpenSettings)
                 Spacer(Modifier.width(3.dp))
-                if (session.inExchange) {
-                    // 거래소 안에서는 pause 가 자동 제어라 수동 토글 버튼이 필요 없고,
-                    // 새로고침은 리셋이 아니라 보유 아이템 가치 재계산이어야 한다.
-                    HudMaterialIconButton(Icons.Filled.Refresh, onRefreshHoldings)
-                } else {
+                if (!session.inExchange) {
+                    // 거래소 안에서는 pause 가 자동 제어라 수동 토글 버튼이 필요 없다.
                     HudMaterialIconButton(
                         if (session.paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
                         onTogglePause,
                     )
                     Spacer(Modifier.width(3.dp))
-                    // 앱 쪽 "리셋" 버튼과 아이콘을 맞춰 새로고침(순환 화살표) 모양을 쓴다 — 거래소
-                    // 모드의 Refresh(위 126줄, 보유 아이템 가치 재계산)와는 다른 동작이지만 동시에
-                    // 같이 뜨지 않으므로 혼동 없음. 짧은 탭으론 아무 일도 안 나게 하고 롱프레스에만
+                }
+                if (page == 1) {
+                    // "가치" 화면(거래소로 자동 진입했든, 수동 스와이프로 왔든)에서는 새로고침이
+                    // 리셋이 아니라 보유 아이템 가치 재계산이어야 한다.
+                    HudMaterialIconButton(Icons.Filled.Refresh, onRefreshHoldings)
+                } else {
+                    // "수익" 화면의 새로고침(위, 보유 아이템 가치 재계산)과 헷갈리지 않게 휴지통
+                    // 모양 + 빨간색으로 구분한다. 짧은 탭으론 아무 일도 안 나게 하고 롱프레스에만
                     // 반응한다 — 오버레이는 작고 드래그 중에도 탭이 쉽게 튀어서, 되돌릴 수 없는
                     // 동작을 일반 탭 버튼으로 두면 위험하다. 배지 자체도 "짧게=토글 / 길게=드래그"로
                     // 롱프레스를 의도적 동작 신호로 쓰고 있어서 같은 문법.
-                    HudLongPressIconButton(Icons.Filled.Refresh, onReset)
+                    HudLongPressIconButton(Icons.Filled.Delete, onReset)
                 }
                 Spacer(Modifier.width(3.dp))
                 HudMaterialIconButton(Icons.Filled.Close, onCollapse)
             }
 
-            if (session.inExchange) {
+            if (page == 1) {
                 HoldingsBody(session.holdings)
             } else {
                 when {
