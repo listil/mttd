@@ -58,6 +58,13 @@ class OverlayHost(
     private var iconView: ComposeView? = null
     private var hudView: ComposeView? = null
 
+    // HUD 창-이동 드래그(HudOverlay.onDragStart/onDragBy) 진행 중 위치를 소수점까지 추적하는
+    // 앵커 — hudParams.x/y 는 Int라 매 스텝 dx/dy(Float)를 그때그때 반올림해 누적하면 느린
+    // 드래그에서 손가락보다 창이 뒤처지는 드리프트가 생긴다(구 View 기반 코드는 항상 제스처
+    // 시작점 기준 절대 델타로 계산해 이 문제가 없었다 — 여기서도 같은 방식을 씀).
+    private var hudDragAnchorX = 0f
+    private var hudDragAnchorY = 0f
+
     private val iconParams = defaultParams(dip(56), dip(56)).apply {
         gravity = Gravity.TOP or Gravity.START
     }
@@ -136,14 +143,24 @@ class OverlayHost(
                 onReset = {
                     com.mttd.TrackerApplication.instance.trackerService.value?.resetSession()
                 },
+                // 창-이동(길게 눌러 드래그)은 더 이상 View.setOnTouchListener 가 아니라 Compose
+                // 쪽 pointerInput(HudOverlay 내부, 스와이프 제스처와 같은 파이프라인)에서 처리한다
+                // — 카드 전체를 덮는 스와이프 pointerInput 때문에 View 레벨 리스너가 터치를 아예
+                // 못 받던 버그(펼친 HUD가 안 움직임) 수정. HudView.kt 의 관련 주석 참조.
+                onDragStart = {
+                    hudDragAnchorX = hudParams.x.toFloat()
+                    hudDragAnchorY = hudParams.y.toFloat()
+                },
+                onDragBy = { dx, dy ->
+                    hudDragAnchorX += dx
+                    hudDragAnchorY += dy
+                    hudParams.x = hudDragAnchorX.toInt()
+                    hudParams.y = hudDragAnchorY.toInt()
+                    hudView?.let { v -> try { wm.updateViewLayout(v, hudParams) } catch (_: Throwable) {} }
+                },
+                onDragEnd = { ownScope.launch { prefs.setHudPosition(hudParams.x, hudParams.y) } },
             )
         }
-        attachDragBehavior(
-            view = hud,
-            params = hudParams,
-            onTap = null,       // HUD 는 Compose 버튼(접기 아이콘)이 자체적으로 클릭 처리
-            onDone = { x, y -> ownScope.launch { prefs.setHudPosition(x, y) } },
-        )
         try {
             wm.addView(hud, hudParams)
             hudView = hud

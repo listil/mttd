@@ -3,6 +3,7 @@ package com.mttd.ui.overlay
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -80,22 +81,38 @@ fun HudOverlay(
     onTogglePause: () -> Unit = {},
     onRefreshHoldings: () -> Unit = {},
     onReset: () -> Unit = {},
+    /** 창-이동 드래그 시작 — [OverlayHost] 가 현재 창 위치를 앵커로 캡처하는 용도. */
+    onDragStart: () -> Unit = {},
+    /** 창-이동 드래그 중 매 스텝 델타(px, 이전 이벤트 기준 증분). */
+    onDragBy: (dx: Float, dy: Float) -> Unit = { _, _ -> },
+    /** 창-이동 드래그 종료 — 위치 영속화 트리거용. */
+    onDragEnd: () -> Unit = {},
 ) {
     val session by sessionState.collectAsStateWithLifecycle()
     val prices = priceState?.collectAsStateWithLifecycle()?.value
 
     // 0 = 수익 화면, 1 = 보유 아이템(인벤토리 시세) 화면. 거래소 진입/퇴장 때는 지금까지처럼
     // 자동으로 맞는 화면으로 넘어가고(아래 LaunchedEffect), 그 상태가 유지되는 동안엔 좌우로
-    // 드래그해서 수동으로도 넘길 수 있다 — 배지의 "짧게=탭 / 길게=드래그"와 같은 문법으로,
-    // 빠른 스와이프는 400ms 롱프레스 임계값 전에 끝나서 OverlayHost.attachDragBehavior 의
-    // 창-이동 롱프레스와 겹치지 않는다(그쪽은 롱프레스 전 이동엔 항상 false 를 리턴해 이 안의
-    // pointerInput 으로 그대로 흘려보낸다).
+    // 드래그해서 수동으로도 넘길 수 있다 — 배지의 "짧게=탭 / 길게=드래그"와 같은 문법.
+    //
+    // 창-이동(길게 눌러서 HUD 자체를 옮기는 것)은 예전엔 OverlayHost.attachDragBehavior 가
+    // View.setOnTouchListener 로 별도 처리했는데, 이 스와이프 제스처가 카드 전체를 덮는
+    // pointerInput 이 되면서 터치 DOWN 을 Compose(AndroidComposeView)가 먼저 가져가 버려
+    // View 레벨 리스너가 그 뒤로 아예 이벤트를 못 받게 됐다(펼친 HUD를 드래그해도 안 움직이는
+    // 버그의 원인) — 두 제스처가 서로 다른 레이어(View vs Compose)에서 같은 터치 스트림을
+    // 각자 해석하려던 게 문제였으므로, 창-이동도 Compose 쪽으로 옮겨서 detectHorizontalDragGestures
+    // (빠른 스와이프, 아래) 와 detectDragGesturesAfterLongPress(길게 누른 뒤 드래그, 아래)
+    // 를 같은 pointerInput 파이프라인에서 순서대로 배치했다 — 앞쪽이 먼저 소비하면 뒤쪽은
+    // 이미 consume 된 이벤트를 보고 자동으로 물러난다(Compose 제스처 감지 함수들의 표준 동작).
     var page by remember { mutableStateOf(if (session.inExchange) 1 else 0) }
     LaunchedEffect(session.inExchange) {
         page = if (session.inExchange) 1 else 0
     }
     val density = LocalDensity.current
     val swipeThresholdPx = remember(density) { with(density) { 40.dp.toPx() } }
+    // 창-이동 롱프레스 인식 시 진동 — 예전 View 기반 attachDragBehavior 가 주던 피드백을
+    // Compose 쪽으로 옮기면서 같이 안 옮겨져 드래그가 조용해졌던 것 보완.
+    val dragHaptics = LocalHapticFeedback.current
 
     // 시간이 실제로 흐를 때만 1 초 틱을 돌린다 (일시정지·집계 대기 중엔 정지).
     val ticking = session.active && !session.paused && session.baselineReady
@@ -118,20 +135,6 @@ fun HudOverlay(
             .fillMaxWidth()
             .background(Color(0xFF0F172A).copy(alpha = 0.9f), RoundedCornerShape(12.dp))
             .border(1.dp, Color(0xFFE2E8F0).copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-            .pointerInput(Unit) {
-                var dragTotal = 0f
-                detectHorizontalDragGestures(
-                    onDragStart = { dragTotal = 0f },
-                    onHorizontalDrag = { change, dragAmount ->
-                        change.consume()
-                        dragTotal += dragAmount
-                    },
-                    onDragEnd = {
-                        if (dragTotal <= -swipeThresholdPx) page = 1
-                        else if (dragTotal >= swipeThresholdPx) page = 0
-                    },
-                )
-            }
             .padding(10.dp),
     ) {
         Column(
@@ -181,6 +184,46 @@ fun HudOverlay(
                 HudMaterialIconButton(Icons.Filled.Close, onCollapse)
             }
 
+            // 스와이프(페이지 전환)와 창-이동(길게 눌러 드래그) 제스처는 타이틀 바(버튼들)를
+            // 뺀 이 영역에만 건다 — 버튼 위에 얹으면 HudLongPressIconButton(리셋, 1000ms) 같은
+            // 자식 컴포저블의 자체 롱프레스와 같은 포인터 스트림을 두고 경쟁하게 되는데, 시스템
+            // 기본 롱프레스(~500ms, detectDragGesturesAfterLongPress 내부 타임아웃)가 항상 먼저
+            // 이겨서 버튼의 1000ms 타이머가 끝나기 전에 포인터를 채가 버린다(리셋이 안 눌리던
+            // 회귀 원인). 버튼 영역을 아예 이 pointerInput 히트 영역 밖으로 빼는 쪽이, 자식이
+            // 이벤트를 consume 하는 정확한 타이밍에 기대는 것보다 확실하다.
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        var dragTotal = 0f
+                        detectHorizontalDragGestures(
+                            onDragStart = { dragTotal = 0f },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                dragTotal += dragAmount
+                            },
+                            onDragEnd = {
+                                if (dragTotal <= -swipeThresholdPx) page = 1
+                                else if (dragTotal >= swipeThresholdPx) page = 0
+                            },
+                        )
+                    }
+                    .pointerInput(onDragStart, onDragBy, onDragEnd) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                dragHaptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onDragStart()
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                onDragBy(dragAmount.x, dragAmount.y)
+                            },
+                            onDragEnd = { onDragEnd() },
+                            onDragCancel = { onDragEnd() },
+                        )
+                    },
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
             if (page == 1) {
                 HoldingsBody(session.holdings)
             } else {
@@ -252,6 +295,7 @@ fun HudOverlay(
                         }
                     }
                 }
+            }
             }
         }
     }
