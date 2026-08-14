@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          페어링 코드 입력 알림(RemoteInput) 전용 — 설정 앱의 "페어링 코드로 기기 페어링"
+          화면을 유저가 벗어나면 그 페어링 세션 자체가 끊기므로, 화면 전환 없이 알림 서랍에서
+          코드를 받아야 한다. shortService: 짧게 끝나는 작업이라 추가 FGS 권한이 필요 없다.
+        -->
+        <service
+            android:name=".service.DirectAdbPairingService"
+            android:exported="false"
+            android:foregroundServiceType="shortService" />
+    </application>
+
+</manifest>

@@ -57,7 +57,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mttd.IUserService
 import com.mttd.TrackerApplication
 import com.mttd.data.log.LogPoller
-import com.mttd.data.shizuku.ShizukuState
 import com.mttd.domain.models.SessionState
 import com.mttd.service.TrackerForegroundService
 import kotlinx.coroutines.Dispatchers
@@ -81,10 +80,10 @@ private enum class MainTab(val label: String) {
  */
 @Composable
 fun OnboardingScreen(
-    state: ShizukuState,
-    onRequestPermission: () -> Unit,
+    ready: Boolean,
     userService: () -> IUserService?,
     onReopenWizard: () -> Unit = {},
+    statusContent: @Composable () -> Unit,
 ) {
     var tab by remember { mutableStateOf(MainTab.EARNINGS) }
     val context = LocalContext.current
@@ -164,7 +163,7 @@ fun OnboardingScreen(
             ) {
                 when (tab) {
                     MainTab.EARNINGS -> {
-                        if (!state.ready) {
+                        if (!ready) {
                             NotReadyNotice(onGoToSettings = { tab = MainTab.SETTINGS })
                         }
                         EarningsSummaryCard()
@@ -175,22 +174,24 @@ fun OnboardingScreen(
                         ValueScreen()
                     }
                     MainTab.SETTINGS -> {
-                        ShizukuStatusCard(state = state, onRequestPermission = onRequestPermission)
-                        // 오버레이 권한은 Shizuku 와 무관(userService 안 씀)해서 게이트 밖으로 뺐다 —
-                        // 안 그러면 재부팅으로 Shizuku 가 죽었을 때 이미 켜둔 오버레이 설정을
+                        statusContent()
+                        // 오버레이 권한은 특권 접근 계층과 무관(userService 안 씀)해서 게이트 밖으로 뺐다 —
+                        // 안 그러면 재부팅 등으로 접근이 끊겼을 때 이미 켜둔 오버레이 설정을
                         // 확인/조정할 카드 자체가 통째로 사라져 보인다.
                         OverlayCard()
-                        if (state.ready) {
+                        if (ready) {
                             PriceCard()
                             LoadoutExportCard()
-                            AdvancedSection(userService = userService)
                         } else {
                             Text(
-                                text = "Shizuku 준비 완료 후 나머지 설정이 활성화됩니다.",
+                                text = "위 연결이 준비되면 나머지 설정이 활성화됩니다.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        // 진단 로그 공유는 연결이 안 된 상태(=페어링/바인딩 문제 진단 중)에서
+                        // 오히려 더 필요하므로 ready 게이트 밖에 둔다.
+                        AdvancedSection(userService = userService)
                         TextButton(onClick = onReopenWizard) { Text("설정 가이드 다시 보기") }
                         ExitCard()
                     }
@@ -504,67 +505,31 @@ private fun PriceSummaryLine() {
     )
 }
 
+/**
+ * Shizuku 바인딩처럼 유저 쪽에서 재현은 되는데 개발자가 adb로 못 보는 문제를 리포트받기 위한
+ * 버튼. [DiagnosticLog] 가 계속 누적해둔 상태 전이 기록을 시스템 공유 시트로 넘겨
+ * 카카오톡 등으로 바로 전달할 수 있게 한다. shizuku/direct 양쪽 상태 카드가 공용으로 쓴다.
+ */
 @Composable
-private fun ShizukuStatusCard(
-    state: ShizukuState,
-    onRequestPermission: () -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    // 다 준비된 상태에선 매번 4줄 상세를 보여줄 필요가 없어 한 줄 요약으로 접어둔다.
-    // 뭔가 문제가 있을 땐(하나라도 false) 바로 뭘 고쳐야 하는지 보여야 하니 항상 펼쳐둔다.
-    val collapsible = state.ready
-    Card(modifier = Modifier.fillMaxWidth().padding(0.dp)) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            if (collapsible) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { expanded = !expanded },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "✅ Shizuku 준비 완료",
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Icon(
-                        if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                        contentDescription = if (expanded) "접기" else "펼치기",
-                    )
-                }
-            } else {
-                Text("Shizuku 상태", fontWeight = FontWeight.SemiBold)
+fun DiagnosticLogButton() {
+    val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var sending by remember { mutableStateOf(false) }
+    TextButton(
+        onClick = {
+            sending = true
+            scope.launch {
+                val intent = com.mttd.diagnostics.DiagnosticLog.buildShareIntent(context)
+                sending = false
+                context.startActivity(intent)
             }
-            if (expanded || !collapsible) {
-                StatusRow("설치됨", state.installed)
-                StatusRow("바인더 살아있음", state.binderAlive)
-                StatusRow("권한 허용", state.permission)
-                StatusRow("UserService 바인딩", state.userServiceBound)
-                Spacer(Modifier.height(4.dp))
-                Button(
-                    onClick = onRequestPermission,
-                    enabled = state.installed,
-                ) {
-                    Text(
-                        when {
-                            !state.installed -> "Shizuku 미설치 (재확인)"
-                            !state.binderAlive -> "Shizuku 실행 후 재확인"
-                            !state.permission -> "권한 요청"
-                            !state.userServiceBound -> "UserService 재바인딩"
-                            else -> "이미 준비됨"
-                        }
-                    )
-                }
-            }
-        }
-    }
+        },
+        enabled = !sending,
+    ) { Text(if (sending) "로그 준비 중..." else "📋 진단 로그 보내기") }
 }
 
 @Composable
-private fun StatusRow(label: String, ok: Boolean) {
+fun StatusRow(label: String, ok: Boolean) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(if (ok) "✅" else "⭕")
         Text("  $label", style = MaterialTheme.typography.bodyMedium)
@@ -600,6 +565,7 @@ private fun AdvancedSection(userService: () -> IUserService?) {
             )
         }
         if (expanded) {
+            DiagnosticLogButton()
             ProbeCard(userService = userService)
             LogTailCard(userService = userService)
         }

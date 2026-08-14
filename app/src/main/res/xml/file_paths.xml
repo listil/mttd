@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- DiagnosticLog.buildShareIntent() 가 여기(cacheDir/diagnostics/)에 내보낸 파일만 공유. -->
+    <cache-path name="diagnostics" path="diagnostics/" />
+</paths>

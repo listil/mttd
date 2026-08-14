@@ -28,6 +28,7 @@ import com.mttd.data.log.OffsetStore
 import com.mttd.data.prefs.OverlayPrefs
 import com.mttd.data.prices.PriceApi
 import com.mttd.data.prices.PriceRepository
+import com.mttd.diagnostics.DiagnosticLog
 import com.mttd.domain.SessionAggregator
 import com.mttd.domain.ValueCalculator
 import com.mttd.domain.models.SessionState
@@ -157,6 +158,7 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
 
     override fun onCreate() {
         super.onCreate()
+        DiagnosticLog.log(applicationContext, "Service", "onCreate")
         savedStateRegistryController.performRestore(null)
         offsetStore = OffsetStore(applicationContext)
         itemInfo = ItemInfoLookup(applicationContext)
@@ -297,22 +299,22 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
      * 오버레이만 띄우거나 시스템이 서비스를 재시작한 상태에서는 로그를 아예 안 읽었다.
      * → "가방 정렬하고 앱을 다녀와야 동작" 의 직접 원인.
      *
-     * Shizuku 가 아직 준비 안 됐으면 준비될 때까지 재시도한다.
+     * 특권 접근 계층(Shizuku/direct-adb)이 아직 준비 안 됐으면 준비될 때까지 재시도한다.
      */
     @Synchronized
     fun ensurePollerRunning() {
         if (poller != null || pollerBootstrap?.isActive == true) return
         pollerBootstrap = lifecycleScope.launch {
-            val shizuku = TrackerApplication.instance.shizukuManager
+            val access = TrackerApplication.instance.accessManager
             while (poller == null) {
-                if (!shizuku.state.value.ready) {
-                    // 권한 요청 다이얼로그는 띄우지 않는다 (3 초마다 반복될 수 있으므로).
-                    // 권한 승인은 앱 UI 에서만 하고, 여기서는 바인딩만 재시도.
-                    shizuku.bindIfPermitted()
+                if (!access.ready.value) {
+                    // 권한 요청/페어링 UI 는 띄우지 않는다 (3 초마다 반복될 수 있으므로).
+                    // 그건 앱 UI 에서만 하고, 여기서는 조용한 재연결만 재시도.
+                    access.retryConnect()
                     kotlinx.coroutines.delay(POLLER_BOOTSTRAP_RETRY_MS)
                     continue
                 }
-                val path = resolveLogPath(shizuku.service)
+                val path = resolveLogPath(access.service)
                 if (path == null) {
                     kotlinx.coroutines.delay(POLLER_BOOTSTRAP_RETRY_MS)
                     continue
@@ -335,9 +337,9 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
 
     private fun startPoller(path: String) {
         stopPoller()
-        val shizuku = TrackerApplication.instance.shizukuManager
+        val access = TrackerApplication.instance.accessManager
         val p = LogPoller(
-            service = { shizuku.service },
+            service = { access.service },
             offsetStore = offsetStore,
             logPath = path,
         )
@@ -386,6 +388,7 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
     }
 
     override fun onDestroy() {
+        DiagnosticLog.log(applicationContext, "Service", "onDestroy")
         stopPoller()
         destroyOverlay()
         TrackerApplication.instance.setTrackerService(null)

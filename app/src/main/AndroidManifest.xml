@@ -57,6 +57,17 @@
             android:name="moe.shizuku.client.V3_SUPPORT"
             android:value="true" />
 
+        <!-- 진단 로그 공유(카카오톡 등) 시 cacheDir 파일을 content:// URI 로 노출 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <service
             android:name=".service.TrackerForegroundService"
             android:exported="false"

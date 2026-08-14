@@ -63,7 +63,12 @@ class UpdateChecker {
             val current = BuildConfig.VERSION_NAME.substringBefore("-").trim()
             if (compareSemver(latest, current) <= 0) return@withContext null
 
-            val apk = rel.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
+            // 릴리스 하나에 shizuku/direct 두 APK가 같이 붙으므로, 지금 실행 중인 flavor 이름이
+            // 파일명에 포함된 걸 우선한다(둘 다 "mttd-X.Y.Z-<flavor>-release.apk" 로 산출됨) —
+            // 안 그러면 direct 유저한테 shizuku APK를 업데이트로 안내하는 식의 오배정이 생긴다.
+            val apks = rel.assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
+            val apk = apks.firstOrNull { it.name.contains(BuildConfig.FLAVOR, ignoreCase = true) }
+                ?: apks.firstOrNull()
             Update(
                 versionName = latest,
                 releaseUrl = rel.htmlUrl,

@@ -3,8 +3,9 @@ package com.mttd
 import android.app.Application
 import coil.ImageLoader
 import coil.ImageLoaderFactory
-import com.mttd.data.shizuku.ShizukuManager
+import com.mttd.data.adb.DirectAdbManager
 import com.mttd.diagnostics.CrashLogger
+import com.mttd.diagnostics.DiagnosticLog
 import com.mttd.service.TrackerForegroundService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -13,7 +14,7 @@ import okhttp3.OkHttpClient
 
 class TrackerApplication : Application(), ImageLoaderFactory {
 
-    lateinit var shizukuManager: ShizukuManager
+    lateinit var accessManager: DirectAdbManager
         private set
 
     private val _trackerService = MutableStateFlow<TrackerForegroundService?>(null)
@@ -25,7 +26,14 @@ class TrackerApplication : Application(), ImageLoaderFactory {
         super.onCreate()
         CrashLogger.install(this)
         instance = this
-        shizukuManager = ShizukuManager(this).also { it.start() }
+        DiagnosticLog.log(this, "App", "onCreate ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) [direct]")
+        accessManager = DirectAdbManager(this).also { it.start() }
+
+        // 디버그 빌드에서만 — 이미 페어링된 셸 연결로 실제 logcat 을 떠서 진단 로그에 붙인다.
+        // release APK 는 이 줄 자체가 없으니(BuildConfig.DEBUG 상수로 아예 분기) 별도 토글 불필요.
+        if (BuildConfig.DEBUG) {
+            DiagnosticLog.extraSection = { accessManager.captureLogcatText() }
+        }
     }
 
     /**
