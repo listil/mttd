@@ -5,6 +5,7 @@ import com.mttd.data.export.LoadoutGear
 import com.mttd.data.export.LoadoutGenius
 import com.mttd.data.export.LoadoutMemory
 import com.mttd.data.export.LoadoutPrism
+import com.mttd.data.export.LoadoutSlateBlock
 import com.mttd.data.log.TorchlightPayloadParser
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,6 +17,22 @@ import kotlinx.coroutines.flow.asStateFlow
  * [SessionAggregator] 와는 완전히 독립적인 관심사라 별도 클래스로 분리했다 — 세션/픽업 집계의
  * 델리케이트한 상태머신을 건드리지 않기 위함. `TrackerForegroundService` 의 라인 콜렉터가
  * `aggregator.observeLine(line)` 과 나란히 `observeLine(line)` 을 호출해주면 된다.
+ *
+ * ## `loadout`(필드별 추출) vs 원문 재전송 — 실제 내보내기는 후자를 쓴다
+ *
+ * 미니 토치DB 스펙이 늘어날 때마다(`dst`/`genius`/`prism`/`sb` 전부 이 세션 안에서 겪음) 이 클래스에
+ * 새 필드를 추가해줘야 했다 — 저쪽도 이미 자기 "로그 가져오기"(데스크톱, 원문 로그를 브라우저에서
+ * 직접 파싱) 기능으로 같은 파싱을 하고 있으니, 이중 유지보수다. 그래서 실제 내보내기(`LogRelayClient`)
+ * 는 필드별로 뽑은 [loadout] 이 아니라 원문 로그를 그대로 서버에 올리고 파싱은 수신측에 맡긴다 —
+ * 스펙이 늘어나도 이 앱은 코드 변경이 필요 없다. [loadout]/`extractXxx()` 계열은 온보딩 카드의
+ * 미리보기("장비 10개 · 스킬 37개 · ...")용으로만 남겨뒀다.
+ *
+ * 원문은 이 클래스가 들고 있지 않고 [lastSnapshotStartOffset] 만 기록해둔다 — 내보내기 버튼을
+ * 누른 시점에 `LogPoller.readRange(lastSnapshotStartOffset)` 로 그 오프셋부터 파일 끝까지를
+ * 다시 읽어온다(미니 토치DB 스펙: "GetPlayerData 시작 ~ 다음 GetPlayerData 직전 또는 파일 끝").
+ * 세션 내내 원문을 인메모리에 계속 쌓아두면 몇 시간짜리 세션에서 무한정 자라므로(이 프로젝트가
+ * [SessionAggregator] 에서 이미 피하는 패턴), 필요한 시점에 기기 로그 파일에서 다시 읽는 쪽을
+ * 택했다.
  *
  * ## 왜 장비는 `ItemChange@` 슬롯 델타(PageId=-1/-4)가 아니라 `GetPlayerData` 를 쓰는가
  *
@@ -65,6 +82,13 @@ import kotlinx.coroutines.flow.asStateFlow
  *   enchant=`Item.EnchantSlots[].affixId`
  * - `slate` = `bag.dressingTalentBlocks[].Item.BaseTalentList[]` 전체를 평탄화 (블록 자체의
  *   BaseId 가 아니라 그 안에 실린 재능 노드 ID 목록 — 중복 허용)
+ * - `sb` = 같은 `dressingTalentBlocks[]`(`PageId=-4`인 것만) 에서, 이번엔 블록 하나하나를
+ *   `[uniq, index, direction, nodes]` 튜플로 — uniq=`Item.UniqueItmId`(0이면 실제 인스턴스가
+ *   없다는 sentinel이라 `Item.BaseId`로 대체, 신격 석판이 대표 사례), index=블록의 `Index`
+ *   (보드상 행×10+열), direction=`Item.Direction`(없으면 0), nodes=`Item.BaseTalentList[]`.
+ *   `slate` 가 노드 ID만 평탄화해서 "어디에 뭐가 꽂혀있는지"를 버리는 것과 달리, `sb` 는 보드
+ *   배치까지 복원 가능하게 해서 `slate` 를 대체한다(스펙 문서 2026-08-13 추가) — 구버전 수신측
+ *   호환을 위해 `slate` 도 계속 같이 보낸다.
  * - `mems` = `heroCharacterv3OverView.reminiscenceOverView.reminiscence[].detail` —
  *   base=`BaseId`, baseAffix=`BaseAffix[].Id`, suffix=`Suffix[].Id`
  * - `dst` = `ContractInfosV2.pointDatas[].tattoInfo.BaseId` (천명 소켓이 없는 포인트는
@@ -106,13 +130,34 @@ class CharacterLoadoutTracker {
     /** 마지막으로 파싱에 성공한 스냅샷. null 이면 아직 `GetPlayerData` 를 한 번도 못 봤다는 뜻. */
     val loadout: StateFlow<CharacterLoadout?> = _loadout.asStateFlow()
 
+    /**
+     * 가장 최근 `GetPlayerData` 시작 마커 줄이 로그 파일에서 시작하는 바이트 오프셋. 파싱 실패
+     * 여부와 무관하게 마커를 보는 즉시 기록된다.
+     *
+     * 실제 내보내기(`LogRelayClient`)는 이 오프셋을 [com.mttd.data.log.LogPoller.readRange] 에
+     * 넘겨 "그 지점부터 지금까지"를 다시 읽어 서버로 보낸다 — 미니 토치DB 스펙
+     * (https://mini-tlidb.winterer.workers.dev/logimport_spec) 이 요구하는 캡처 범위가 딱 이거다.
+     * `GetPlayerData` 응답 자체(시작~`----Socket ... End----`)로 캡처를 끊으면 안 된다 — 로그인
+     * 직후 그 블록 *바로 뒤에* 이어지는 `ItemChange@ ... PageId=-6` 스킬 델타(위 클래스 doc 참조,
+     * `skillLayout.slots` 의 캡=30을 우회하는 유일한 경로)와, 세션 중 실제 스킬 교체 시 실시간으로
+     * 오는 같은 델타가 전부 이 오프셋 뒤쪽에 있기 때문 — 블록 원문만 잘라 보내면 서버 쪽 파서는
+     * 캡=30짜리 스킬만 보게 된다.
+     */
+    var lastSnapshotStartOffset: Long? = null
+        private set
+
     /** [loadout] 이 갱신된 시각 (epoch ms). UI 의 "n 분 전" 표시용이라 StateFlow 로 감쌀 정도는 아님. */
     var latestSyncAtMs: Long = 0
         private set
 
     val latestLoadout: CharacterLoadout? get() = _loadout.value
 
-    fun observeLine(line: String) {
+    /**
+     * @param offset 이 줄이 로그 파일에서 시작하는 바이트 오프셋. [LogPoller.Line.offset] 을 그대로
+     *   넘기면 된다 — 오프셋을 모르는 호출부(테스트 등)는 생략해도 파싱 자체엔 지장 없다, 다만
+     *   그 경우 [lastSnapshotStartOffset] 은 갱신되지 않는다.
+     */
+    fun observeLine(line: String, offset: Long = -1L) {
         if (line.contains("PageId=-6")) {
             handleSkillPage6Delta(line)
         }
@@ -120,6 +165,7 @@ class CharacterLoadoutTracker {
             if (line.contains("GetPlayerData") && recvStartRegex.containsMatchIn(line)) {
                 inBlock = true
                 buffer.clear()
+                if (offset >= 0) lastSnapshotStartOffset = offset
             }
             return
         }
@@ -180,6 +226,7 @@ class CharacterLoadoutTracker {
             gear = extractGear(root),
             slate = extractSlate(root),
             mems = extractMems(root),
+            sb = extractSlateBlocks(root),
             genius = extractGenius(root),
             dst = extractDst(root),
             prism = extractPrism(root),
@@ -256,6 +303,25 @@ class CharacterLoadoutTracker {
                     ?: emptyList()
             }
             ?.takeIf { it.isNotEmpty() }
+
+    private fun extractSlateBlocks(root: Map<String, Any>): List<LoadoutSlateBlock>? =
+        root.child("bag")?.child("dressingTalentBlocks")?.values
+            ?.mapNotNull { it.asMap() }
+            ?.filter { it.leaf("PageId") == "-4" }
+            ?.mapNotNull { it.toLoadoutSlateBlock() }
+            ?.takeIf { it.isNotEmpty() }
+
+    private fun Map<String, Any>.toLoadoutSlateBlock(): LoadoutSlateBlock? {
+        val item = child("Item") ?: return null
+        val index = leaf("Index")?.toIntOrNull() ?: return null
+        // UniqueItmId=0 은 "실제 인스턴스 id 없음"의 sentinel — 신격 석판처럼 드롭 아이템이
+        // 아닌 경우가 여기 해당하고, 스펙은 이때 BaseId 로 대체하라고 명시한다.
+        val uniqRaw = item.leaf("UniqueItmId")?.toIntOrNull() ?: 0
+        val uniq = uniqRaw.takeIf { it != 0 } ?: item.leaf("BaseId")?.toIntOrNull() ?: return null
+        val direction = item.leaf("Direction")?.toIntOrNull() ?: 0
+        val nodes = item.child("BaseTalentList")?.values?.mapNotNull { it as? String } ?: emptyList()
+        return LoadoutSlateBlock(uniq = uniq, index = index, direction = direction, nodes = nodes)
+    }
 
     private fun extractMems(root: Map<String, Any>): List<LoadoutMemory>? =
         root.child("heroCharacterv3OverView")?.child("reminiscenceOverView")?.child("reminiscence")?.values

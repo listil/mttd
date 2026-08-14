@@ -813,16 +813,18 @@ private fun BadgeMetricSelector(
 }
 
 /**
- * 캐릭터 장비/스킬/석판/천명/핵심 재능/프리즘 정보를 미니 토치DB([Mli1Codec]) 로 내보내는 카드.
+ * 캐릭터 장비/스킬/석판/천명/핵심 재능/프리즘 정보를 미니 토치DB로 내보내는 카드.
  *
  * [CharacterLoadoutTracker] 는 로그인 직후 한 번 오는 `GetPlayerData` 전체 동기화를 관측해야
  * 채워지므로, 앱을 켠 뒤로 게임에 재접속한 적이 없으면 비어 있을 수 있다 — 그 경우 안내만 하고
  * 버튼은 계속 눌러볼 수 있게 둔다(재시도 비용이 없으므로).
  *
- * `logimport` 처리는 수신 사이트가 브라우저 로컬스토리지에서 처리하는 순수 클라이언트 동작이라
- * (서버는 정적 SPA 셸만 내려줌), 앱이 직접 HTTP 요청을 보내는 방식으론 프리셋이 생성되지 않는다.
- * 그래서 URL 만 만들어 시스템 브라우저로 넘긴다 — 이 앱 프로세스가 mini-tlidb.winterer.workers.dev
- * 로 직접 통신하는 게 아니므로 README/INSTALL 의 네트워크 호스트 목록에 추가할 필요도 없다.
+ * 2026-08-14부터 [com.mttd.data.export.LogRelayClient] 로 원본 로그 슬라이스(`GetPlayerData`
+ * 시작 지점부터 현재 파일 끝까지, [TrackerForegroundService.currentLoadoutExportBlock] 참조)를
+ * 그대로 올리고, 서버가 돌려준 1회용 URL을 여는 방식이다 — 필드별 추출([Mli1Codec] 의
+ * `logimport=` URL 방식)은 [CharacterLoadoutTracker] 클래스 doc의 이유로 폐기했다. 이 앱이
+ * mini-tlidb.winterer.workers.dev 로 직접 통신하는 유일한 지점이라 README/INSTALL 의 네트워크
+ * 호스트 목록에 등재돼 있어야 한다.
  */
 @Composable
 private fun LoadoutExportCard() {
@@ -831,6 +833,8 @@ private fun LoadoutExportCard() {
     val service by app.trackerService.collectAsStateWithLifecycle()
     val loadout by (service?.loadoutState ?: MutableStateFlow(null))
         .collectAsStateWithLifecycle()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val relayClient = remember { com.mttd.data.export.LogRelayClient() }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -854,38 +858,55 @@ private fun LoadoutExportCard() {
                 LoadoutPreview(loadout!!)
             }
 
+            var sending by remember { mutableStateOf(false) }
+            var errorText by remember { mutableStateOf<String?>(null) }
             var copied by remember { mutableStateOf(false) }
 
-            // URL이 매번 달라져도(nonce, CharacterLoadout.nonce 참조) 두 번째 클릭부터 안 열렸는데,
-            // 이미 열려서 멈춰있는 그 탭에서 *같은* 주소를 수동으로 다시 커밋하면 정상 로드됐다 —
-            // 즉 URL 내용 문제가 아니라 앱 -> 크롬으로 인텐트를 두 번째 보내는 것 자체가 새 탐색을
-            // 못 일으키는 문제였다. 이 파일의 다른 브라우저 오픈 인텐트(업데이트 다운로드 링크,
-            // GitHub 링크, 오버레이 권한 설정)는 전부 FLAG_ACTIVITY_NEW_TASK 를 붙이는데 이 버튼만
-            // 빠져있었다 — Activity 컨텍스트라 첫 실행은 문제없이 되지만(크롬이 singleTask라
-            // 런치모드가 알아서 자기 태스크로 보내줌), 이미 존재하는 태스크를 재선택해 앞으로
-            // 가져오는 경로에서는 (특히 이 기종의 커스텀 윈도우 매니저에서) NEW_TASK 없이는
-            // onNewIntent 로 진짜 새 탐색이 안 걸리는 것으로 보인다. 다른 세 곳과 동일하게 플래그를
-            // 맞췄다.
-            fun saltedUrl() = com.mttd.data.export.Mli1Codec.buildUrl(
-                loadout!!.copy(src = "mTTD", nonce = System.currentTimeMillis().toString(36)),
-            )
+            fun openUrl(url: String) {
+                // FLAG_ACTIVITY_NEW_TASK 필요한 이유는 예전 saltedUrl() 시절과 동일 — 이 파일의
+                // 다른 브라우저 오픈 인텐트(업데이트 다운로드 링크, GitHub 링크, 오버레이 권한
+                // 설정)와 통일. 지금은 서버가 매번 새 토큰을 발급해 URL이 항상 달라지므로 클라이언트
+                // 쪽에서 nonce 를 직접 만들 필요는 없어졌다.
+                val i = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(i)
+            }
+
+            /** 원본 슬라이스를 릴레이 서버에 올리고, 성공하면 [onSuccess] 에 발급받은 URL을 넘긴다. */
+            fun relayThen(onSuccess: (String) -> Unit) {
+                sending = true
+                errorText = null
+                scope.launch {
+                    try {
+                        val rawSlice = service?.currentLoadoutExportBlock()
+                        if (rawSlice == null) {
+                            errorText = "아직 원본 로그를 못 잡았습니다. 재접속 후 다시 시도해주세요."
+                            return@launch
+                        }
+                        val result = relayClient.relay(rawSlice)
+                        onSuccess(result.url)
+                    } catch (e: Exception) {
+                        errorText = "전송 실패: ${e.message ?: "네트워크 오류"} — 다시 시도해주세요."
+                    } finally {
+                        sending = false
+                    }
+                }
+            }
 
             Button(
-                enabled = loadout != null,
-                onClick = {
-                    val i = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(saltedUrl()))
-                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(i)
-                },
-            ) { Text("미니 토치DB로 내보내기") }
+                enabled = loadout != null && !sending,
+                onClick = { relayThen { url -> openUrl(url) } },
+            ) { Text(if (sending) "전송 중..." else "미니 토치DB로 내보내기") }
 
             TextButton(
-                enabled = loadout != null,
+                enabled = loadout != null && !sending,
                 onClick = {
-                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                        as android.content.ClipboardManager
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("mini-tlidb logimport URL", saltedUrl()))
-                    copied = true
+                    relayThen { url ->
+                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("mini-tlidb logdump URL", url))
+                        copied = true
+                    }
                 },
             ) { Text("(안 열리면) 주소만 복사해서 직접 붙여넣기") }
 
@@ -896,15 +917,20 @@ private fun LoadoutExportCard() {
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
+            errorText?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
         }
     }
 }
 
 /**
  * 실제로 뭐가 전송될지 미리 볼 수 있게 요약. 사용자가 "진짜 지금 장비가 맞는지" 브라우저를
- * 열기 전에 앱 안에서 확인할 수 있는 유일한 지점이라 — 이 방식은 서버 응답을 못 받으므로
- * (LoadoutExportCard 주석 참조) 전송 성공/실패는 여기서 확인할 수 없고, 이 미리보기가
- * "보낼 데이터가 맞는지"의 유일한 확인 수단이다.
+ * 열기 전에 앱 안에서 확인할 수 있는 유일한 지점이다. 단, 실제로 서버에 올라가는 건 이 필드들이
+ * 아니라 원본 로그 슬라이스([TrackerForegroundService.currentLoadoutExportBlock], `LogRelayClient`
+ * 참조) 이라 — 파싱은 수신측이 따로 하므로, 이 미리보기는 "대략 이 정도 데이터가 담겨있다"는
+ * 참고용이지 전송될 JSON의 정확한 내용은 아니다. 전송 성공/실패는 [LoadoutExportCard] 의
+ * `errorText` 로 확인한다.
  */
 @Composable
 private fun LoadoutPreview(loadout: com.mttd.data.export.CharacterLoadout) {

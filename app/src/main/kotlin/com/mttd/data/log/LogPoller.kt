@@ -40,7 +40,12 @@ class LogPoller(
     private val logPath: String,
 ) {
 
-    private val _lines = MutableSharedFlow<String>(
+    /** 한 줄과 그 줄이 파일에서 시작하는 바이트 오프셋. [readRange] 로 특정 지점부터 다시 읽어야
+     * 하는 소비자([com.mttd.domain.CharacterLoadoutTracker] 등)를 위한 것 — 오프셋이 필요 없으면
+     * [text] 만 쓰면 된다. */
+    data class Line(val text: String, val offset: Long)
+
+    private val _lines = MutableSharedFlow<Line>(
         replay = 0,
         // `GetPlayerData` 같은 대형 Socket 응답(CharacterLoadoutTracker 참조)은 한 청크(256KB)에
         // 수천 개의 짧은 `+key [value]` 줄이 실려 오는데, DROP_OLDEST + tryEmit 조합으로는
@@ -52,7 +57,7 @@ class LogPoller(
         extraBufferCapacity = 16384,
         onBufferOverflow = BufferOverflow.SUSPEND,
     )
-    val lines: SharedFlow<String> = _lines.asSharedFlow()
+    val lines: SharedFlow<Line> = _lines.asSharedFlow()
 
     private val _status = MutableStateFlow(PollingStatus())
     val status: StateFlow<PollingStatus> = _status.asStateFlow()
@@ -140,25 +145,30 @@ class LogPoller(
                 }
                 if (bytes != null && bytes.isNotEmpty()) {
                     var text = bytes.toString(Charsets.UTF_8)
+                    var textStartOffset = offset
 
-                    // 파일 최초 바이트에 있는 UTF-8 BOM 은 첫 라인에 U+FEFF 로 보이므로 제거.
+                    // 파일 최초 바이트에 있는 UTF-8 BOM(3바이트)은 첫 라인에 U+FEFF 로 보이므로
+                    // 제거하고, 그만큼 이 텍스트의 파일상 시작 오프셋도 밀어준다.
                     if (offset == 0L && text.startsWith('﻿')) {
                         text = text.substring(1)
+                        textStartOffset += 3
                     }
 
-                    // 이전 pendingTail 과 결합 후 라인 분리.
+                    // 이전 pendingTail 과 결합 후 라인 분리. pendingTail 은 이전 반복에서 이미
+                    // offset 에 반영된 바이트이므로, 그 시작 위치는 (이번 청크 시작) - (pendingTail
+                    // 바이트 길이) 로 역산한다 — readRange() 로 특정 줄부터 다시 읽으려면 줄마다
+                    // 정확한 파일 오프셋이 필요해서(CharacterLoadoutTracker 참조), split 을
+                    // 델리미터 위치까지 추적하는 버전으로 바꿨다.
+                    val pendingTailBytes = if (pendingTail.isEmpty()) 0
+                                            else pendingTail.toString().toByteArray(Charsets.UTF_8).size
+                    val combinedStartOffset = textStartOffset - pendingTailBytes
                     val combined = if (pendingTail.isEmpty()) text
                                    else pendingTail.toString() + text
-                    val endsWithNewline = combined.endsWith('\n') || combined.endsWith('\r')
 
-                    // '\r\n', '\r', '\n' 모두 처리.
-                    val parts = combined.split(Regex("\\r\\n|\\r|\\n"))
-                    val completeCount = if (endsWithNewline) parts.size else parts.size - 1
+                    val split = splitLines(combined, combinedStartOffset)
 
                     var lineCount = 0
-                    for (i in 0 until completeCount) {
-                        val line = parts[i]
-                        if (line.isEmpty()) continue
+                    for (line in split.lines) {
                         // tryEmit 은 버퍼가 꽉 차면 DROP_OLDEST 로 조용히 라인을 버린다 — 픽업/맵진입
                         // 처럼 짧은 버스트에선 안 걸렸지만, GetPlayerData 처럼 한 청크에 수천 줄이
                         // 몰리는 대형 응답(CharacterLoadoutTracker 참조)에선 소비 측이 못 따라갈 때
@@ -170,13 +180,13 @@ class LogPoller(
 
                     // 마지막 조각이 미완성이면 tail 로 보관 (엄청 큰 경우 강제 flush)
                     pendingTail.clear()
-                    if (!endsWithNewline && parts.isNotEmpty()) {
-                        val tail = parts.last()
-                        if (tail.length > MAX_TAIL_BYTES) {
-                            _lines.emit(tail)
+                    if (split.tailText.isNotEmpty()) {
+                        val tailBytes = split.tailText.toByteArray(Charsets.UTF_8).size
+                        if (tailBytes > MAX_TAIL_BYTES) {
+                            _lines.emit(Line(split.tailText, split.tailStartOffset))
                             lineCount++
                         } else {
-                            pendingTail.append(tail)
+                            pendingTail.append(split.tailText)
                         }
                     }
 
@@ -233,6 +243,82 @@ class LogPoller(
 
     private fun coroutineScopeIsActive() = scope?.isActive == true
 
+    /** 완결된 라인 목록(오프셋 포함) + 미완성 tail 텍스트 + tail 이 시작하는 파일 오프셋. */
+    private data class SplitResult(val lines: List<Line>, val tailText: String, val tailStartOffset: Long)
+
+    /**
+     * `combined`(파일에서 [startOffset] 부터 시작하는 텍스트)를 줄 단위로 쪼개면서 각 줄의 정확한
+     * 파일 바이트 오프셋을 함께 계산한다. `\r\n`/`\r`/`\n` 델리미터는 전부 ASCII 1~2바이트라
+     * 문자 길이 = 바이트 길이라서 그대로 더할 수 있다. 빈 줄도 오프셋 누적에는 반영해야 다음 줄의
+     * 오프셋이 안 어긋난다.
+     */
+    private fun splitLines(combined: String, startOffset: Long): SplitResult {
+        val result = ArrayList<Line>()
+        var charCursor = 0
+        var byteCursor = startOffset
+        for (m in LINE_DELIM_REGEX.findAll(combined)) {
+            val lineText = combined.substring(charCursor, m.range.first)
+            if (lineText.isNotEmpty()) result += Line(lineText, byteCursor)
+            val lineBytes = if (lineText.isEmpty()) 0 else lineText.toByteArray(Charsets.UTF_8).size
+            byteCursor += lineBytes + m.value.length
+            charCursor = m.range.last + 1
+        }
+        return SplitResult(result, combined.substring(charCursor), byteCursor)
+    }
+
+    /**
+     * [fromOffset] 부터 파일 현재 끝까지를 폴링 루프와 무관하게 독립적으로 다시 읽어온다.
+     *
+     * 캐릭터 내보내기([com.mttd.domain.CharacterLoadoutTracker.lastSnapshotStartOffset]) 처럼
+     * "그 시점 이후 지금까지 전부"가 필요한 1회성 요청용 — 폴링 루프가 라인 단위로 흘려보내는
+     * 것과 달리, 여기선 [service]/[logPath] 를 그대로 재사용해 [readFileChunk] 를 chunk 단위로
+     * 반복 호출한다. 폴러의 `offset`/`pendingTail` 상태는 건드리지 않으므로 폴링 중에도 안전하게
+     * 호출할 수 있다.
+     *
+     * 전부-아니면-전무(all-or-nothing) 이다 — 캐릭터 내보내기는 "일부라도 빠지느니 실패가 낫다"는
+     * 원칙(선별해서 보내면 정확히 뭐가 빠졌는지 알 수 없다)이라, 범위가 [maxTotalBytes] 를 넘거나
+     * 중간에 청크 하나라도 못 읽으면 지금까지 읽은 걸 잘라서 반환하지 않고 통째로 실패(null) 처리한다.
+     * 호출부는 null 을 "재시도해라"로 안내하면 된다(재접속하면 [fromOffset] 자체가 최신 로그인으로
+     * 갱신돼 범위도 다시 작아진다).
+     *
+     * @param maxTotalBytes 진짜 병적인 케이스(앱을 켜놓은 채 며칠씩 재접속 없이 방치 등)에 대한
+     *   순수 OOM 방지용 상한이지, 정상적인 몇 시간짜리 파밍 세션에서 걸릴 일은 없어야 한다 — 낮게
+     *   잡으면 범위가 그 이하로도 흔히 넘어가 "정상 세션인데 매번 실패"가 나므로 넉넉하게 잡는다.
+     *   서버 쪽 실제 제한(스펙: 압축 후 1.9MB)은 이 함수가 알 바 아니고, 넘으면 업로드가 HTTP
+     *   에러로 실패하는 게 맞다 — 여기서 먼저 잘라 보내면 그게 바로 "선별 전송"이 된다.
+     * @return 읽은 바이트(항상 `size - fromOffset` 전체). `fromOffset >= 현재 파일 크기`이거나
+     *   서비스에 접근할 수 없거나 범위가 너무 크거나 도중에 읽기가 실패하면 null.
+     */
+    suspend fun readRange(fromOffset: Long, maxTotalBytes: Int = DEFAULT_MAX_RANGE_BYTES): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val svc = service() ?: return@withContext null
+            val size = try { svc.getFileSize(logPath) } catch (t: Throwable) {
+                Log.w(TAG, "readRange: getFileSize failed", t); -1L
+            }
+            if (size < 0 || fromOffset >= size) return@withContext null
+            val expected = size - fromOffset
+            if (expected > maxTotalBytes) {
+                Log.w(TAG, "readRange: range too large ($expected bytes > $maxTotalBytes) — refusing to send a partial slice")
+                return@withContext null
+            }
+
+            val out = java.io.ByteArrayOutputStream(expected.toInt())
+            var cursor = fromOffset
+            while (cursor < size) {
+                val want = (size - cursor).coerceAtMost(MAX_CHUNK_BYTES.toLong()).toInt()
+                val chunk = try { svc.readFileChunk(logPath, cursor, want) } catch (t: Throwable) {
+                    Log.w(TAG, "readRange: readFileChunk failed @$cursor", t); null
+                }
+                if (chunk == null || chunk.isEmpty()) {
+                    Log.w(TAG, "readRange: short read @$cursor (wanted $want, expected up to $size) — refusing partial slice")
+                    return@withContext null
+                }
+                out.write(chunk)
+                cursor += chunk.size
+            }
+            out.toByteArray()
+        }
+
     data class PollingStatus(
         val active: Boolean = false,
         val logPath: String? = null,
@@ -288,5 +374,12 @@ class LogPoller(
         const val GAME_IDLE_GRACE_MS = 45_000L
         const val MAX_CHUNK_BYTES = 262_144  // 256 KB
         const val MAX_TAIL_BYTES = 65_536    // 이보다 큰 미완성 라인은 강제 flush (OOM 방지)
+        /**
+         * [readRange] 기본 상한. all-or-nothing 이라 이 값을 넘기면 통째로 실패하므로, 정상
+         * 파밍 세션(초당 최대 ~100줄, 몇 시간)에서는 절대 안 걸릴 만큼 넉넉하게 잡는다 —
+         * 재접속 없이 방치된 극단적 케이스에 대한 OOM 방지용 최후 방어선일 뿐이다.
+         */
+        const val DEFAULT_MAX_RANGE_BYTES = 64 * 1024 * 1024
+        private val LINE_DELIM_REGEX = Regex("\r\n|\r|\n")
     }
 }

@@ -77,6 +77,18 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
     fun currentLoadout(): com.mttd.data.export.CharacterLoadout? = characterLoadoutTracker.latestLoadout
     fun currentLoadoutSyncedAtMs(): Long = characterLoadoutTracker.latestSyncAtMs
 
+    /**
+     * 실제 내보내기(로그 릴레이)에 쓸 원문 슬라이스 — `GetPlayerData` 시작 지점부터 지금 파일
+     * 끝까지를 [LogPoller.readRange] 로 다시 읽어온다. [CharacterLoadoutTracker] 클래스 doc의
+     * "원문 재전송" 섹션 참조. 아직 스냅샷을 못 봤거나(오프셋 없음), 폴러가 안 돌고 있거나, 그
+     * 시점 이후 파일이 안 자랐으면 null.
+     */
+    suspend fun currentLoadoutExportBlock(): String? {
+        val startOffset = characterLoadoutTracker.lastSnapshotStartOffset ?: return null
+        val bytes = poller?.readRange(startOffset) ?: return null
+        return bytes.toString(Charsets.UTF_8)
+    }
+
     val priceState get() = priceRepo.state
     fun priceRepository(): PriceRepository = priceRepo
     /** 경매장에서 직접 조회한 시세 (스냅샷보다 우선). */
@@ -351,13 +363,13 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
                 // 디버그용 라인 스트림은 **보는 사람이 있을 때만** 채운다.
                 // replay 20 + 버퍼 1024 라 무조건 흘리면 평균 135 자 × 1044 줄이
                 // 항상 힙에 남고, 초당 100 줄이 들어오는 동안 계속 할당/방출이 일어난다.
-                if (_lines.subscriptionCount.value > 0) _lines.tryEmit(line)
+                if (_lines.subscriptionCount.value > 0) _lines.tryEmit(line.text)
                 // 라인 단위 관측 (맵 코드네임 등 assembler 밖 컨텍스트)
-                aggregator.observeLine(line)
-                characterLoadoutTracker.observeLine(line)
+                aggregator.observeLine(line.text)
+                characterLoadoutTracker.observeLine(line.text, line.offset)
                 // 필터 통과분만 assembler 에 공급
-                if (!LogLineFilter.shouldExclude(line)) {
-                    assembler.feed(line)?.let { msg -> aggregator.consume(msg) }
+                if (!LogLineFilter.shouldExclude(line.text)) {
+                    assembler.feed(line.text)?.let { msg -> aggregator.consume(msg) }
                 }
             }
         }
