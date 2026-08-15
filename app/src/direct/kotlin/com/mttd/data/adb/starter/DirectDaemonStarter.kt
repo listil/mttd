@@ -13,17 +13,34 @@ import com.mttd.service.UserService
  * 화이트리스트 포함)을 중복 구현할 필요가 없다.
  *
  * 뜬 뒤엔 [DirectUserServiceProvider] (앱 프로세스, Zygote로 정상 기동된 쪽)에 Binder를
- * ContentProvider `call()` 로 넘기고 바로 종료 — 실제 서비스는 이 Binder를 통해 앱이 직접
- * 붙어서 쓰고, 이 starter 프로세스 자신은 더 할 일이 없다(Shizuku 의 `Looper.loop()` 로 계속
- * 사는 방식과 달리, UserService 는 상태가 없는 Stub이라 프로세스를 살려둘 이유가 없다 — 대신
- * shell UID 프로세스 자체가 아니라 **Binder를 받은 앱 프로세스 쪽**이 그 Binder를 계속 참조하는
- * 한 유효하다. 단, Binder 뒤의 실체가 이 프로세스에 있으므로 이 프로세스가 죽으면 Binder도
- * 죽는다 — 그래서 실제로는 살아있어야 한다. [main] 끝에서 리턴하지 않고 대기).
+ * ContentProvider `call()` 로 넘긴다 — 실제 서비스는 이 Binder를 통해 앱이 직접 붙어서 쓴다.
+ * Binder 의 실체(UserService 인스턴스)가 이 프로세스에 있으므로, 이 프로세스가 죽으면 앱이
+ * 들고 있는 참조도 함께 죽는다 — 그래서 한 번 보내고 끝내지 않고 두 가지를 계속 반복한다:
+ *
+ * 1. **주기적 재전송**: 앱 프로세스가 (크래시나 OS의 일시적 백그라운드 kill 등으로) 재시작돼도
+ *    Binder 참조를 잃어버린다. 앱은 재시작 시 스스로 "이미 뜬 데몬이 있으니 그걸 쓰자"고 판단할
+ *    방법이 없어서(먼저 연락해오는 쪽은 항상 이 데몬이다), 이 프로세스가 살아있는 한 계속
+ *    재전송을 시도해야 앱이 WiFi 없이도(adb 재부트스트랩 없이) 다시 붙을 수 있다.
+ * 2. **자동 만료**: 반대로 사용자가 mTTD를 완전히 안 쓰는데 이 shell UID 프로세스가 무한정
+ *    남아있는 것도 바람직하지 않다. 다만 "앱이 종료됐다"는 이벤트를 이 프로세스가 직접 감지해
+ *    즉시 죽는 방식은 위험하다 — [com.mttd.service.TrackerForegroundService] 는 `START_STICKY`라
+ *    OS가 메모리 확보차 잠깐 죽였다 자동 재시작하는 경우에도 같은 "죽음" 신호가 뜨고, 그때
+ *    데몬까지 같이 죽이면 재시작 직후 또 WiFi가 필요한 재부트스트랩이 필요해져서 이번에 고친
+ *    문제가 그대로 재발한다. 그래서 즉각 반응하는 이벤트 훅 대신, [SELF_EXPIRE_AFTER_MS] 동안
+ *    앱 쪽 ContentProvider에 단 한 번도 못 닿으면(=일시적 재시작이 아니라 정말 안 쓰는 것으로
+ *    판단) 그때 스스로 종료한다 — 오탐(정상 사용 중인데 잘못 죽는 것) 위험을 낮추는 대신 정리가
+ *    느린 쪽을 택했다.
  */
 object DirectDaemonStarter {
 
     private const val METHOD_SEND_USER_SERVICE = "sendUserService"
     private const val EXTRA_BINDER = "binder"
+
+    /** 이 주기로 계속 재전송 시도 — 성공/실패와 무관하게 그냥 반복(무거운 작업 아님). */
+    private const val ANNOUNCE_INTERVAL_MS = 15_000L
+
+    /** 클래스 doc의 "자동 만료" 참조 — 넉넉하게 잡아 정상적인 재시작/백그라운드 전환 중 오탐 방지. */
+    private const val SELF_EXPIRE_AFTER_MS = 60 * 60_000L // 1시간
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -38,11 +55,22 @@ object DirectDaemonStarter {
         val extras = Bundle()
         extras.putBinder(EXTRA_BINDER, service.asBinder())
 
-        HiddenApis.callProvider(authority, callingPkg, METHOD_SEND_USER_SERVICE, extras)
+        // 시작 시점을 첫 기준점으로 삼는다 — 앱이 아직 뜨기 전이라 첫 시도가 바로 실패해도
+        // SELF_EXPIRE_AFTER_MS 전체를 유예로 준다(막 시작했는데 바로 만료 판정하면 안 됨).
+        var lastSuccessAtMs = System.currentTimeMillis()
 
-        // Binder 의 실체(UserService 인스턴스)가 이 프로세스에 있으므로, 이 프로세스가 죽으면
-        // 앱 쪽이 들고 있는 IUserService 참조도 함께 죽는다 — 그래서 절대 리턴하지 않고 대기한다.
-        // 앱 쪽에서 `binder.linkToDeath()` 로 이 죽음을 감지해 재부트스트랩을 트리거한다.
-        Thread.sleep(Long.MAX_VALUE)
+        while (true) {
+            try {
+                HiddenApis.callProvider(authority, callingPkg, METHOD_SEND_USER_SERVICE, extras)
+                lastSuccessAtMs = System.currentTimeMillis()
+            } catch (t: Throwable) {
+                // 앱이 지금 안 떠 있거나(정상적인 경우) 일시적 오류일 뿐 — 조용히 넘어가고
+                // 다음 주기에 다시 시도한다. 얼마나 오래 실패했는지만 아래에서 판단.
+                if (System.currentTimeMillis() - lastSuccessAtMs > SELF_EXPIRE_AFTER_MS) {
+                    System.exit(0)
+                }
+            }
+            Thread.sleep(ANNOUNCE_INTERVAL_MS)
+        }
     }
 }

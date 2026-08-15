@@ -87,8 +87,14 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
      * 쪽, 메인 스레드가 아닐 수 있음). 이후로는 adb 연결이 끊겨도(WiFi→LTE 전환 등) 이 Binder는
      * 순수 커널 Binder IPC라 영향을 안 받는다 — [DirectAdbManager] 클래스 doc의 WiFi 의존성
      * 문제를 이 경로가 해결한다.
+     *
+     * [DirectDaemonStarter] 가 살아있는 동안 이 Binder를 주기적으로 계속 재전송하므로(앱이
+     * 재시작돼도 다시 붙을 수 있게 하기 위함, 그쪽 클래스 doc 참조) 이미 붙어있는 상태에서도
+     * 반복 호출될 수 있다 — 매번 [linkToDeath] 를 새로 걸면 같은 프로세스가 나중에 한 번 죽을 때
+     * death recipient 가 중복 등록돼 콜백이 여러 번 불린다. 이미 붙어있으면 그냥 무시한다.
      */
     private fun handleDaemonBinder(binder: IBinder) {
+        if (daemonBound) return
         try {
             binder.linkToDeath({
                 Log.w(TAG, "daemon binder died")
