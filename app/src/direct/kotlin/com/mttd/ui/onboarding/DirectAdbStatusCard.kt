@@ -84,6 +84,16 @@ fun DirectAdbStatusCard(manager: DirectAdbManager) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // 연결된 뒤엔 파일 접근이 순수 Binder(DirectDaemonStarter가 shell UID로 띄운
+                // 상주 프로세스)로 넘어가서 WiFi를 꺼도(LTE 등) 계속 동작한다 — 다만 그 상주
+                // 프로세스는 기기가 재부팅되면(또는 강제 종료되면) 같이 사라지므로, 그 다음엔
+                // 이 페어링/연결 과정을 다시 거쳐야 한다(그 순간엔 WiFi 필요).
+                Text(
+                    "※ 한 번 연결되면 이후엔 WiFi 없이(LTE 등) 계속 동작합니다 — 기기를 재부팅했을 때만" +
+                        " WiFi에서 다시 연결해주면 됩니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 val statusText = when (status) {
                     DirectAdbManager.Status.IDLE -> null

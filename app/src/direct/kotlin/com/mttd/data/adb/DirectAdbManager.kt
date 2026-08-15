@@ -3,12 +3,14 @@ package com.mttd.data.adb
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.IBinder
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.lifecycle.Observer
 import com.mttd.IUserService
 import com.mttd.data.GameFileAccessPolicy
 import com.mttd.data.access.PrivilegedAccessManager
+import com.mttd.data.adb.starter.DirectUserServiceProvider
 import com.mttd.diagnostics.DiagnosticLog
 import com.mttd.service.DirectAdbPairingService
 import kotlinx.coroutines.CoroutineScope
@@ -72,7 +74,70 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
 
     override fun start() {
         DiagnosticLog.log(appContext, "DirectAdb", "start()")
+        // 데몬(DirectDaemonStarter)이 아직 안 붙었을 때의 폴백 — adb shell 커맨드 하나마다
+        // 왕복하는 LocalUserService 는 WiFi 가 꺼지면 같이 죽는다(클래스 doc 의 WiFi 의존성
+        // 설명 참조). launchDaemon() 이 성공하면 handleDaemonBinder() 가 이걸 진짜 Binder 기반
+        // service 로 갈아치운다.
         service = LocalUserService()
+        DirectUserServiceProvider.onBinderReceived = { binder -> handleDaemonBinder(binder) }
+    }
+
+    /**
+     * [DirectUserServiceProvider] 가 shell UID 데몬으로부터 Binder를 받으면 호출됨(앱 프로세스
+     * 쪽, 메인 스레드가 아닐 수 있음). 이후로는 adb 연결이 끊겨도(WiFi→LTE 전환 등) 이 Binder는
+     * 순수 커널 Binder IPC라 영향을 안 받는다 — [DirectAdbManager] 클래스 doc의 WiFi 의존성
+     * 문제를 이 경로가 해결한다.
+     */
+    private fun handleDaemonBinder(binder: IBinder) {
+        try {
+            binder.linkToDeath({
+                Log.w(TAG, "daemon binder died")
+                DiagnosticLog.log(appContext, "DirectAdb", "daemon binder died — will re-bootstrap on next retryConnect")
+                daemonBound = false
+                // service 는 일부러 안 내린다 — 다음 IUserService 호출이 자연히 실패하면서
+                // 호출부(LogPoller 등)가 기존에 하던 에러 처리 경로를 그대로 타면 되고, 여기서
+                // service = null 로 내리면 그 사이 잠깐 "아직 준비 안 됨" 오탐이 뜬다.
+            }, 0)
+        } catch (t: Throwable) {
+            Log.w(TAG, "linkToDeath failed", t)
+        }
+        service = IUserService.Stub.asInterface(binder)
+        daemonBound = true
+        _connected.value = true
+        _status.value = Status.CONNECTED
+        DiagnosticLog.log(appContext, "DirectAdb", "daemon binder attached — switched off adb shell fallback")
+        Log.i(TAG, "daemon binder attached")
+    }
+
+    @Volatile
+    private var daemonBound = false
+    @Volatile
+    private var launchingDaemon = false
+
+    /**
+     * shell UID 데몬([DirectDaemonStarter])을 [AdbClient] 로 이미 확립된 adb 연결 위에서 한 번
+     * 띄운다 — 이 호출 자체는 adb(=이 시점엔 WiFi)가 필요하지만, 뜨고 나면 [handleDaemonBinder]
+     * 가 받는 Binder는 네트워크와 무관해진다. [connectLocked] 직후(완전 페어링/재연결 성공 시)
+     * 호출한다.
+     */
+    private fun launchDaemon() {
+        if (daemonBound || launchingDaemon) return
+        val starterPath = "${appContext.applicationInfo.nativeLibraryDir}/libmttd_starter.so"
+        val apkPath = appContext.applicationInfo.sourceDir
+        val authority = "${appContext.packageName}.direct.userservice"
+        val cmd = "$starterPath --apk=$apkPath " +
+            "--class=com.mttd.data.adb.starter.DirectDaemonStarter " +
+            "--name=mttd_daemon --authority=$authority --pkg=${appContext.packageName}"
+        launchingDaemon = true
+        try {
+            runShell(cmd)
+            DiagnosticLog.log(appContext, "DirectAdb", "launchDaemon() issued")
+        } catch (t: Throwable) {
+            Log.w(TAG, "launchDaemon failed", t)
+            DiagnosticLog.log(appContext, "DirectAdb", "launchDaemon failed: ${t.javaClass.simpleName}: ${t.message}")
+        } finally {
+            launchingDaemon = false
+        }
     }
 
     fun hasSavedConnection(): Boolean = prefs.getString(KEY_PORT, null) != null
@@ -113,6 +178,7 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
 
             prefs.edit().putInt(KEY_PORT, connectPort).apply()
             connectLocked(connectPort)
+            launchDaemon()
             _status.value = Status.CONNECTED
             Result.success(Unit)
         } catch (t: Throwable) {
@@ -135,7 +201,10 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
 
     /** 부트스트랩 재시도 루프용 — 알림/다이얼로그 없이, 저장된 포트로만 재연결 시도. */
     override fun retryConnect() {
-        if (_connected.value || reconnecting) return
+        // 데몬 Binder가 이미 붙어있으면(WiFi가 있든 없든 계속 유효) adb 재연결 자체가 필요 없다
+        // — _connected.value 만으로는 이 구분이 안 돼서(adb 연결 유지 여부만 반영) daemonBound 를
+        // 별도로 본다.
+        if (daemonBound || reconnecting) return
         val savedPort = prefs.getInt(KEY_PORT, -1)
         if (savedPort <= 0) return
         reconnecting = true
@@ -143,6 +212,7 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
         managerScope.launch {
             try {
                 connectLocked(savedPort)
+                launchDaemon()
                 _status.value = Status.CONNECTED
             } catch (t: Throwable) {
                 // 저장된 포트가 이제 안 맞을 수 있다(무선 디버깅 재시작 등) — mDNS로 다시 찾아본다.
@@ -154,6 +224,7 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
                     try {
                         prefs.edit().putInt(KEY_PORT, fresh).apply()
                         connectLocked(fresh)
+                        launchDaemon()
                         _status.value = Status.CONNECTED
                         return@launch
                     } catch (t2: Throwable) {

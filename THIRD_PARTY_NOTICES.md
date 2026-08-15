@@ -17,12 +17,26 @@ The `direct` build flavor's wireless-debugging pairing/connection code is ported
 - `app/src/direct/jni/adb_pairing.cpp`
 - `app/src/direct/jni/adb_pairing.h`
 - `app/src/direct/jni/logging.h`
+- `app/src/direct/jni/mttd_starter.cpp` (ported from `manager/src/main/jni/starter.cpp` and
+  `misc.cpp` — root-only code paths removed, since mTTD's `direct` flavor only ever runs as the
+  adb shell user; see the file's own header comment for the exact adaptation)
 
 Adaptations are noted individually at the top of each file (package rename, JNI class path,
 removed dependencies on Shizuku's own internal utility libraries, and the
-`com.android.org.conscrypt` → `org.conscrypt` swap described below). No files from Shizuku's
-`manager`/`server`/`starter` process-spawning machinery are used — mTTD's `direct` flavor never
-spawns a second process; it talks to the device's own `adbd` directly from the app's own process.
+`com.android.org.conscrypt` → `org.conscrypt` swap described below).
+
+**2026-08-15 update**: mTTD's `direct` flavor *does* now spawn a second process — a shell-UID
+daemon started via `app_process` (mirroring Shizuku's own bootstrap model), needed so file access
+keeps working after the wireless-debugging connection drops (e.g. switching off Wi-Fi to LTE),
+instead of depending on that adb connection staying open for every single file read. `mttd_starter.cpp`
+above is the ported half of that (process spawn/backgrounding). The Kotlin side of the handoff
+(`app/src/direct/kotlin/com/mttd/data/adb/starter/HiddenApis.kt`,
+`DirectDaemonStarter.kt`, `DirectUserServiceProvider.kt`) is **original code, not a Shizuku port** —
+it implements the same general pattern (hand a Binder to the app process via a `ContentProvider`
+`call()`, since that's the standard Android mechanism for an arbitrary process to reach a specific
+app's process over Binder) against AOSP's own `@hide` framework interfaces
+(`IActivityManager`/`IContentProvider`), not against Shizuku's source, which wasn't available to
+reference at the time.
 
 ```
 Copyright (C) 2021 Rikka
