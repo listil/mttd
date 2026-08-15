@@ -388,6 +388,12 @@ class SessionAggregator(
             val pageId = del.groupValues[2]
             val slotId = del.groupValues[3]
             val itemId = extractItemId(key) ?: key
+            // 이 슬롯이 이번 세션에서 baseline 합성 키(page:slot:itemId)로만 잡혀 있고
+            // 실거래 Update/Add 로 uuid 키 재확인이 한 번도 없었다면, updatePositionKey 없이
+            // 바로 아래 handleModfy 를 부르면 옛 합성 키가 slotLastCount 에 양수로 남아
+            // computeHoldings() 합산에서 유령 보유량으로 잡힌다 — 팔았는데 계속 보유 목록에
+            // 남는 버그. Update/Add 경로(위 378줄)와 똑같이 포지션 점유 키부터 정리한다.
+            updatePositionKey(pageId, slotId, key)
             handleModfy(
                 slotUuid = key,
                 itemId = itemId,
