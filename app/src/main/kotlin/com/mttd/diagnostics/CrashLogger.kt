@@ -43,7 +43,7 @@ object CrashLogger {
     private fun writeCrashLog(context: Context, thread: Thread, throwable: Throwable) {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val header = buildString {
-            appendLine("mTTD ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            appendLine("mTTD ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}), flavor=${BuildConfig.FLAVOR}")
             appendLine("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("Thread: ${thread.name}")
             appendLine("Time: $timestamp")

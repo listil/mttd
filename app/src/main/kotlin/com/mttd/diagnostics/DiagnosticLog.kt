@@ -75,7 +75,7 @@ object DiagnosticLog {
     }
 
     private fun header(): String = buildString {
-        appendLine("mTTD ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+        appendLine("mTTD ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}), flavor=${BuildConfig.FLAVOR}")
         appendLine("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
         appendLine("Exported: ${timeFmt.format(Date())}")
     }

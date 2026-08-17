@@ -112,7 +112,7 @@ fun OnboardingScreen(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = "v${com.mttd.BuildConfig.VERSION_NAME}",
+                        text = "v${com.mttd.BuildConfig.VERSION_NAME} (${com.mttd.BuildConfig.FLAVOR})",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -246,7 +246,7 @@ private fun UpdateBanner() {
             }
             if (expanded) {
                 Text(
-                    "현재 ${com.mttd.BuildConfig.VERSION_NAME}" +
+                    "현재 ${com.mttd.BuildConfig.VERSION_NAME} (${com.mttd.BuildConfig.FLAVOR})" +
                         if (u.apkSizeBytes > 0) "  ·  APK %.1f MB".format(u.apkSizeBytes / 1024.0 / 1024.0) else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
