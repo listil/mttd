@@ -967,12 +967,20 @@ class SessionAggregator(
             val completed = if (prevArea != null) s.mapsCompleted + 1 else s.mapsCompleted
             // 이름 우선순위: map.json/map_alias.json 큐레이션 매핑 → 관측된 MapName code 원본
             // → itemInfo 매핑 → levelId 자체
-            val displayName = mapNames?.resolve(latestMapCode, levelId)
+            val curatedMapName = mapNames?.resolve(latestMapCode, levelId)
+            val displayName = curatedMapName
                 ?: latestMapCode
                 ?: levelId?.let { itemInfo.lookup(it)?.name }
                 ?: levelId
             // 진행 중인 회차에 맵 이름을 달아준다 (회차 목록/그래프 라벨용).
             if (currentRunMapName == null) currentRunMapName = displayName
+            // map.json/map_alias.json 은 실제 농사 맵(감시자 던전 등)만 커버하고 마을은 안
+            // 걸린다 — 그래서 매칭 성공을 "진짜 맵 안" 확정으로 써도 안전하다. 폴링이 맵
+            // 중간에 (재)시작돼 그 맵의 Spv3Open 을 놓쳐 암묵적 회차로 잡혔더라도, [endCurrentRunOnMapExit]
+            // 처럼 나갈 때까지 기다리지 않고 여기서 바로 확정해서 M타임이 입장 시점부터 실시간으로 붙는다.
+            if (currentRunId >= 0 && !currentRunIsMapRun && curatedMapName != null) {
+                currentRunIsMapRun = true
+            }
             // "이번 진입" 목록은 여기서 비우지 않는다. 맵 열기(Spv3Open) 직후 ~100 ms 만에
             // 이 이벤트가 오기 때문에, 여기서 비우면 방금 기록한 소비(마이너스) 가 사라진다.
             // 목록 초기화는 startNewRun() 이 Spv3Open 시점에 수행.
