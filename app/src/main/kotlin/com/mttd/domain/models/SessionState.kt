@@ -109,7 +109,9 @@ data class TimeSample(val timeSlotMs: Long, val cumulativeValue: Double)
 /**
  * 맵 1회차 기록.
  *
- * 맵 열기(`Spv3Open`)를 경계로 끊는다. 마지막 항목이 진행 중인 회차 ([endedAtMs] == null).
+ * 맵 열기(`Spv3Open`)로 시작하고, 다음 맵 열기 또는 맵에서 나가는 신호(`AudioBGM OnExit
+ * Level`, 둘 중 먼저 오는 쪽)로 끝난다 — 나간 뒤 다음 맵을 바로 안 열어도 경과시간이 계속
+ * 늘어나지 않도록. 마지막 항목이 진행 중인 회차 ([endedAtMs] == null).
  * 잘못 집계된 회차는 [SessionState.runs] 에서 통째로 지울 수 있고,
  * 지우면 세션 총합도 다시 계산된다.
  */

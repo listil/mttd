@@ -217,6 +217,18 @@ class SessionAggregator(
     private val mapOpenStartRegex = Regex("""ItemChange@\s+ProtoName=Spv3Open\s+start""")
 
     /**
+     * 맵에서 나감(마을 귀환 등). 이전에는 회차 종료를 다음 [mapOpenStartRegex] (다음 맵 열기)
+     * 에만 의존했는데, 맵을 나온 뒤 한동안 다음 맵을 안 열면 그 사이 시간이 전부 이번 회차
+     * 경과시간으로 잡혀 무기한 늘어났다 (`MapRun.durationMs` 가 `endedAtMs ?: now` 라서).
+     *
+     * 실기기 로그 캡처(mems-check-2.log 등)로 확인: Spv3Open 으로 연 맵을 나올 때마다
+     * `TLGame: Display: [Game] warning: AudioBGM OnExit Level` 이 정확히 한 번씩, 마을
+     * LevelUid(111000) 재진입보다 먼저 찍힌다 — Spv3Open 이 없는 캡처(순수 마을/재접속)에는
+     * 한 번도 안 나타나 맵 전용 신호로 보인다.
+     */
+    private val mapExitRegex = Regex("""AudioBGM OnExit Level""")
+
+    /**
      * 거래소(경매장, AuctionHouseV2) 화면 진입/퇴장. `ItemChange@` 블록이 아니라 UI 페이지
      * 전환 로그라 별도 마커. 실기기 로그 캡처로 확인 (2026-08-08, 2회 진입/퇴장 모두 일치):
      *   TipMsgShowMgr@DispatchPageRunChange PageName = AuctionHouseV2 , PageRunState = Run
@@ -360,6 +372,10 @@ class SessionAggregator(
         // 맵 열기 = 새 런 시작. 이 직후의 소비(마이너스) 항목부터 "이번 진입" 에 쌓인다.
         if (mapOpenStartRegex.containsMatchIn(line)) startNewRun()
 
+        // 맵에서 나감 = 진행 중이던 회차를 여기서 닫는다. 다음 맵을 바로 안 열어도
+        // (마을에서 정비 등) 경과시간이 그 사이 계속 늘어나지 않게.
+        if (mapExitRegex.containsMatchIn(line)) endCurrentRunOnMapExit()
+
         // 가방 스냅샷 시작 → 계산 시작 (게임 응답 배치를 다 기다리지 않고 바로)
         if (bagSnapshotStartRegex.containsMatchIn(line)) {
             flushPendingSlotAsBaseline()
@@ -474,6 +490,7 @@ class SessionAggregator(
      * - `MapName`      — 맵 코드네임
      * - `OnEnterArea`  — 맵 진입
      * - `AuctionHouseV2` — 거래소 화면 진입/퇴장
+     * - `OnExit Level` — 맵에서 나감
      */
     private fun isInteresting(line: String): Boolean =
         line.contains("ItemChange@") ||
@@ -481,7 +498,8 @@ class SessionAggregator(
         line.contains("----Socket") ||
         line.contains("MapName") ||
         line.contains("OnEnterArea") ||
-        line.contains("AuctionHouseV2")
+        line.contains("AuctionHouseV2") ||
+        line.contains("OnExit Level")
 
     /**
      * 경매장 시세 조회(`XchgSearchPrice`) 블록 처리.
@@ -631,6 +649,19 @@ class SessionAggregator(
             if (it.baselineReady) it
             else it.copy(baselineReady = true, startedAtMs = System.currentTimeMillis())
         }
+    }
+
+    /**
+     * 맵에서 나감([mapExitRegex]) — 진행 중인 회차를 여기서 닫는다.
+     *
+     * [startNewRun] 과 달리 새 회차를 열지는 않는다 — 마을에서 주운 것은 다음 [handleModfy]
+     * 가 [ensureCurrentRun] 으로, 다음 맵은 다음 [startNewRun] 이 각자 알아서 새로 연다.
+     * 이미 닫혀 있으면(currentRunId < 0) [closeCurrentRun] 이 알아서 아무 것도 안 한다.
+     */
+    private fun endCurrentRunOnMapExit() {
+        if (currentRunId < 0) return
+        closeCurrentRun()
+        publishRuns()
     }
 
     /** 새 맵 시작 — 진행 중이던 회차를 닫아 기록으로 넘기고, "이번 맵" 을 비운다. */
