@@ -102,6 +102,24 @@ class LogPoller(
             offset = initialSize   // "새 세션": 끝부터
             offsetStore.save(logPath, offset)
             lastPersistedOffset = offset
+        } else if (initialSize > offset && initialSize - offset > STALE_GAP_BYTES) {
+            // 저장된 offset 이 지금 파일 크기보다 한참(기본 10MB+) 뒤처져 있다 — 며칠 방치 후
+            // 재접속했거나, 로테이션 없이 오래 켜둔 게임이라 로그가 이례적으로 커진 경우(실기기
+            // 태블릿에서 1.1GB 로그 + 수백MB 밀린 offset 으로 재현). 그대로 두면 (a) 수백MB를
+            // 1회 폴링당 256KB씩 읽어 캐치업하느라 실제로는 과거인 이벤트가 지금 막 일어난
+            // 것처럼 수십 분간 리플레이되고, (b) 회차 시작/종료 시각이 로그 자체 타임스탬프가
+            // 아니라 처리 순간의 실제 시계(System.currentTimeMillis())로 찍혀서, 리플레이 중엔
+            // 수십 개 회차가 거의 동시에 열렸다 닫혀 경과시간이 전부 0에 가깝게 뭉개진다.
+            // 그 갭은 "새 세션" 과 똑같이 취급해 끝부터 다시 시작한다 — 밀린 구간은 이미
+            // 지나간 과거라 실시간 HUD 입장에선 재생할 가치가 없다.
+            Log.i(
+                TAG,
+                "stored offset $offset is ${(initialSize - offset) / 1_000_000}MB behind " +
+                    "current size $initialSize — treating as stale, jumping to EOF",
+            )
+            offset = initialSize
+            offsetStore.save(logPath, offset)
+            lastPersistedOffset = offset
         }
         _status.value = _status.value.copy(offset = offset)
 
@@ -372,6 +390,13 @@ class LogPoller(
          * 최대 폴링 간격(30 초)보다 넉넉해야 오판하지 않는다.
          */
         const val GAME_IDLE_GRACE_MS = 45_000L
+        /**
+         * 저장된 offset 이 이 이상 뒤처져 있으면 "새 세션" 취급해 끝부터 다시 시작한다.
+         * 활발한 파밍 기준 초당 ~100줄 × ~80바이트 ≈ 8KB/s 이므로, 10MB 갭은 대략 20분
+         * 분량 — 그 정도까지는 "잠깐 자리 비움" 으로 보고 정상 캐치업, 그보다 크면 리플레이
+         * 자체가 더 해롭다고 판단한다(위 stale-gap 분기 주석 참조).
+         */
+        const val STALE_GAP_BYTES = 10_000_000L
         const val MAX_CHUNK_BYTES = 262_144  // 256 KB
         const val MAX_TAIL_BYTES = 65_536    // 이보다 큰 미완성 라인은 강제 flush (OOM 방지)
         /**
