@@ -51,12 +51,10 @@ enum class BadgeIncomeMetric(val id: String, val label: String, val perHour: Boo
         INCOME_PER_HOUR -> when (timeMetric) {
             BadgeTimeMetric.TOTAL -> session.incomePerHour
             BadgeTimeMetric.MAPPING -> session.mapIncomePerHour
-            BadgeTimeMetric.CURRENT_MAP -> session.currentMapIncomePerHour
         }
         NET_INCOME_PER_HOUR -> when (timeMetric) {
             BadgeTimeMetric.TOTAL -> session.netIncomePerHour
             BadgeTimeMetric.MAPPING -> session.netMapIncomePerHour
-            BadgeTimeMetric.CURRENT_MAP -> session.netCurrentMapIncomePerHour
         }
         TOTAL_VALUE -> session.totalValue
         NET_TOTAL_VALUE -> session.netTotalValue
@@ -71,17 +69,19 @@ enum class BadgeIncomeMetric(val id: String, val label: String, val perHour: Boo
 
 /**
  * 배지 1번째 줄(경과 시간)에 어느 시간을 보여줄지. 설정 탭에서 선택 가능.
+ *
+ * "맵마다"(지금 이 맵만)는 후보에서 뺐다 — 배지 2번째 줄 시간당 수익이 이 기준을 그대로
+ * 따라가는데, 맵 하나만의 순간 속도는 방금 산 값 하나에도 요동쳐서 배지처럼 작은 공간에선
+ * 오히려 헷갈린다는 피드백으로 제외. 그 값은 수익 탭의 "이번 맵" 쪽에서 보면 된다.
  */
 enum class BadgeTimeMetric(val id: String, val label: String) {
     TOTAL("total", "T (토탈) — 마을 포함 전체 세션"),
     MAPPING("mapping", "M (매핑) — 맵 안에 있던 시간만"),
-    CURRENT_MAP("current_map", "맵마다 — 지금 이 맵만"),
     ;
 
     fun elapsedMs(session: SessionState): Long = when (this) {
         TOTAL -> session.elapsedMs
         MAPPING -> session.mapElapsedMs
-        CURRENT_MAP -> session.runs.lastOrNull { it.inProgress }?.durationMs ?: 0L
     }
 
     companion object {
