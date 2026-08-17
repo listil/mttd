@@ -40,8 +40,8 @@ import kotlinx.coroutines.flow.flowOf
  * 시간당 수익도 자동으로 M타임 기준으로 계산된다.
  */
 enum class BadgeIncomeMetric(val id: String, val label: String, val perHour: Boolean) {
-    INCOME_PER_HOUR("income_per_hour", "시간당 수익 (1번째 줄 시간 기준)", perHour = true),
-    NET_INCOME_PER_HOUR("net_income_per_hour", "시간당 실수령 (1번째 줄 시간 기준, TAX 제외)", perHour = true),
+    INCOME_PER_HOUR("income_per_hour", "M/T 시간당 수익", perHour = true),
+    NET_INCOME_PER_HOUR("net_income_per_hour", "M/T 시간당 실수령 (TAX 제외)", perHour = true),
     TOTAL_VALUE("total_value", "누적 총수익", perHour = false),
     NET_TOTAL_VALUE("net_total_value", "누적 실수령 (TAX 제외)", perHour = false),
     CURRENT_MAP_VALUE("current_map_value", "이번 맵 수익", perHour = false),
