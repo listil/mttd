@@ -1,6 +1,7 @@
 package com.mttd.data.adb.starter
 
 import android.os.Bundle
+import android.os.SystemClock
 import com.mttd.service.UserService
 
 /**
@@ -66,16 +67,20 @@ object DirectDaemonStarter {
 
         // 시작 시점을 첫 기준점으로 삼는다 — 앱이 아직 뜨기 전이라 첫 시도가 바로 실패해도
         // SELF_EXPIRE_AFTER_MS 전체를 유예로 준다(막 시작했는데 바로 만료 판정하면 안 됨).
-        var lastSuccessAtMs = System.currentTimeMillis()
+        // 벽시계(currentTimeMillis)가 아니라 elapsedRealtime을 쓴다 — NITZ 재동기화나 사용자의
+        // 수동 시각 변경으로 벽시계가 갑자기 크게 튀면, 실제로는 정상 사용 중인데도 이 판정이
+        // "장시간 실패"로 오인해 데몬이 즉시 자살할 수 있다(WiFi 없는 LTE 상황이면 앱이 자동
+        // 재부트스트랩도 못 해서 사용자가 WiFi를 다시 켜기 전까진 복구 불가).
+        var lastSuccessAtMs = SystemClock.elapsedRealtime()
 
         while (true) {
             try {
                 HiddenApis.callProvider(authority, callingPkg, METHOD_SEND_USER_SERVICE, extras)
-                lastSuccessAtMs = System.currentTimeMillis()
+                lastSuccessAtMs = SystemClock.elapsedRealtime()
             } catch (t: Throwable) {
                 // 앱이 지금 안 떠 있거나(정상적인 경우) 일시적 오류일 뿐 — 조용히 넘어가고
                 // 다음 주기에 다시 시도한다. 얼마나 오래 실패했는지만 아래에서 판단.
-                if (System.currentTimeMillis() - lastSuccessAtMs > SELF_EXPIRE_AFTER_MS) {
+                if (SystemClock.elapsedRealtime() - lastSuccessAtMs > SELF_EXPIRE_AFTER_MS) {
                     System.exit(0)
                 }
             }

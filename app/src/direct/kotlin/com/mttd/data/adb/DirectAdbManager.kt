@@ -92,25 +92,48 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
      * 재시작돼도 다시 붙을 수 있게 하기 위함, 그쪽 클래스 doc 참조) 이미 붙어있는 상태에서도
      * 반복 호출될 수 있다 — 매번 [linkToDeath] 를 새로 걸면 같은 프로세스가 나중에 한 번 죽을 때
      * death recipient 가 중복 등록돼 콜백이 여러 번 불린다. 이미 붙어있으면 그냥 무시한다.
+     *
+     * 이 콜백은 Binder 스레드에서 오므로(메인 스레드 아님, 클래스 doc 위 설명 참조) 옛 데몬의
+     * 마지막 재전송과 새 데몬의 첫 재전송이 거의 동시에 들어올 수 있다 — [daemonBindLock] 로
+     * "이미 붙어있나 확인 후 등록"을 원자적으로 묶어서, 두 호출이 동시에 통과해 서로 다른
+     * 바인더로 [service]/[daemonBound] 를 덮어쓰는 레이스를 막는다.
      */
-    private fun handleDaemonBinder(binder: IBinder) {
-        if (daemonBound) return
+    private val daemonBindLock = Any()
+
+    private fun handleDaemonBinder(binder: IBinder) = synchronized(daemonBindLock) {
+        if (daemonBound) return@synchronized
         try {
             binder.linkToDeath({
-                Log.w(TAG, "daemon binder died")
-                DiagnosticLog.log(appContext, "DirectAdb", "daemon binder died — will re-bootstrap on next retryConnect")
-                daemonBound = false
-                // service 는 일부러 안 내린다 — 다음 IUserService 호출이 자연히 실패하면서
-                // 호출부(LogPoller 등)가 기존에 하던 에러 처리 경로를 그대로 타면 되고, 여기서
-                // service = null 로 내리면 그 사이 잠깐 "아직 준비 안 됨" 오탐이 뜬다.
+                // 죽음 통지는 별도 Binder 스레드에서 비동기로 오므로, 이 콜백이 daemonBound 를
+                // 볼 때도 같은 daemonBindLock 을 잡는다 — 안 그러면 이 쓰기가 아직 반영되기 전에
+                // 새 재전송이 handleDaemonBinder() 를 통과하면서 daemonBound 를 (죽은 바인더
+                // 기준으로) stale true 로 읽어 방금 도착한 유효한 새 바인더를 그냥 버릴 수 있다.
+                synchronized(daemonBindLock) {
+                    Log.w(TAG, "daemon binder died")
+                    DiagnosticLog.log(appContext, "DirectAdb", "daemon binder died — will re-bootstrap on next retryConnect")
+                    daemonBound = false
+                    // service 는 일부러 안 내린다 — 다음 IUserService 호출이 자연히 실패하면서
+                    // 호출부(LogPoller 등)가 기존에 하던 에러 처리 경로를 그대로 타면 되고, 여기서
+                    // service = null 로 내리면 그 사이 잠깐 "아직 준비 안 됨" 오탐이 뜬다.
+                }
             }, 0)
         } catch (t: Throwable) {
-            Log.w(TAG, "linkToDeath failed", t)
+            // linkToDeath 가 예외를 던지는 건 보통 바인더가 이 시점에 이미 죽어있었다는 뜻이다
+            // — daemonBound 를 true로 만들지 않고 그냥 버려서, 다음 재전송(최대
+            // ANNOUNCE_INTERVAL_MS 뒤) 때 새 바인더로 다시 시도할 수 있게 한다. 여기서 그냥
+            // 진행해버리면 죽음 감지가 영영 안 걸리는데 daemonBound는 true로 남아, retryConnect()
+            // 의 가드에 막혀 죽은 바인더를 계속 붙든 채 복구가 전혀 안 되는 상태가 된다.
+            Log.w(TAG, "linkToDeath failed, discarding likely-dead binder", t)
+            DiagnosticLog.log(appContext, "DirectAdb", "linkToDeath failed — binder likely already dead, will retry on next announce")
+            return@synchronized
         }
         service = IUserService.Stub.asInterface(binder)
         daemonBound = true
         _connected.value = true
         _status.value = Status.CONNECTED
+        // 이전에 retryConnect() 가 실패해 남겨둔 에러 문구를 지운다 — 안 지우면 데몬 바인더로
+        // 정상 복구된 뒤에도 "✅ 연결됨" 아래에 낡은 "재연결 실패: ..." 가 계속 보인다.
+        _lastError.value = null
         DiagnosticLog.log(appContext, "DirectAdb", "daemon binder attached — switched off adb shell fallback")
         Log.i(TAG, "daemon binder attached")
     }
@@ -238,9 +261,16 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
                     }
                 }
                 Log.w(TAG, "retryConnect failed", t)
-                _status.value = Status.IDLE
-                _lastError.value = "재연결 실패: ${t.message ?: t.javaClass.simpleName}"
-                DiagnosticLog.log(appContext, "DirectAdb", "retryConnect failed: ${t.javaClass.simpleName}: ${t.message}")
+                if (daemonBound) {
+                    // 이 재시도가 진행되는 사이(mDNS 탐색까지 최대 DISCOVER_TIMEOUT_MS) 데몬의
+                    // 주기적 재전송이 handleDaemonBinder() 를 통해 먼저 연결을 복구했을 수 있다
+                    // — 그 경우 방금 반영된 CONNECTED 상태를 이 뒤늦은 실패로 덮어쓰지 않는다.
+                    Log.i(TAG, "retryConnect failed but daemon binder attached meanwhile, ignoring stale failure")
+                } else {
+                    _status.value = Status.IDLE
+                    _lastError.value = "재연결 실패: ${t.message ?: t.javaClass.simpleName}"
+                    DiagnosticLog.log(appContext, "DirectAdb", "retryConnect failed: ${t.javaClass.simpleName}: ${t.message}")
+                }
             } finally {
                 reconnecting = false
             }
