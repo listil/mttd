@@ -664,9 +664,16 @@ class SessionAggregator(
      * [startNewRun] 과 달리 새 회차를 열지는 않는다 — 마을에서 주운 것은 다음 [handleModfy]
      * 가 [ensureCurrentRun] 으로, 다음 맵은 다음 [startNewRun] 이 각자 알아서 새로 연다.
      * 이미 닫혀 있으면(currentRunId < 0) [closeCurrentRun] 이 알아서 아무 것도 안 한다.
+     *
+     * 이 신호 자체가 "방금 그 회차는 진짜 맵이었다"는 증거다 — 실기기 캡처 전부에서 Spv3Open
+     * 없이는 한 번도 안 나타났다. 그래서 폴링이 맵 한가운데서 (재)시작돼 그 맵의 Spv3Open을
+     * 놓쳐 [ensureCurrentRun] 이 암묵적 회차(`isMapRun=false`)로 잡았더라도, 여기서 소급
+     * 확정해준다 — 안 그러면 그 맵 전체가 영영 M(매핑)타임에서 빠진다(실기기 재현: 앱 재시작
+     * 직후 첫 맵만 M경과가 0에 고정).
      */
     private fun endCurrentRunOnMapExit() {
         if (currentRunId < 0) return
+        currentRunIsMapRun = true
         closeCurrentRun()
         publishRuns()
     }
