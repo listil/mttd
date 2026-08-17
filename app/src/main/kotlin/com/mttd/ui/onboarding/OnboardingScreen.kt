@@ -258,10 +258,10 @@ private fun UpdateBanner() {
                     Button(onClick = {
                         val i = android.content.Intent(
                             android.content.Intent.ACTION_VIEW,
-                            android.net.Uri.parse(u.apkUrl ?: u.releaseUrl),
+                            android.net.Uri.parse(u.releaseUrl),
                         ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                         context.startActivity(i)
-                    }) { Text(if (u.apkUrl != null) "APK 다운로드" else "릴리스 열기") }
+                    }) { Text("릴리스 열기") }
                     OutlinedButton(onClick = { dismissed = true }) { Text("나중에") }
                 }
             }
