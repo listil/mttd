@@ -52,6 +52,7 @@ class SessionAggregator(
         sessionItemTotals.clear()
         currentRunId = -1
         currentRunMapName = null
+        currentRunIsMapRun = false
         nextRunId = 1
         pausedByExchange = false
     }
@@ -311,6 +312,12 @@ class SessionAggregator(
     private var currentRunId: Long = -1
     private var currentRunStartedAtMs: Long = 0
     private var currentRunMapName: String? = null
+    /**
+     * 이번 회차가 실제 맵(Spv3Open)으로 열렸는지, 맵 열기 전 획득을 담는 암묵적 회차
+     * ([ensureCurrentRun]) 인지. [SessionState.mapElapsedMs] 가 "진짜 맵 안에 있던 시간"만
+     * 세려면 마을 등에서의 암묵적 회차를 걸러내야 해서 필요하다.
+     */
+    private var currentRunIsMapRun: Boolean = false
     private var nextRunId: Long = 1
 
     /**
@@ -670,6 +677,7 @@ class SessionAggregator(
         currentRunId = nextRunId++
         currentRunStartedAtMs = System.currentTimeMillis()
         currentRunMapName = null
+        currentRunIsMapRun = true
         currentRunByItem.clear()
         publishRuns()
     }
@@ -702,12 +710,13 @@ class SessionAggregator(
         publishRuns()
     }
 
-    /** 아직 회차가 시작되지 않았으면(맵 열기 전 획득) 암묵적으로 하나 연다. */
+    /** 아직 회차가 시작되지 않았으면(맵 열기 전 획득) 암묵적으로 하나 연다. 맵 안이 아니므로 M타임엔 안 잡힌다. */
     private fun ensureCurrentRun(atMs: Long) {
         if (currentRunId >= 0) return
         currentRunId = nextRunId++
         currentRunStartedAtMs = atMs
         currentRunMapName = null
+        currentRunIsMapRun = false
     }
 
     private fun buildRun(endedAtMs: Long?): MapRun = MapRun(
@@ -716,6 +725,7 @@ class SessionAggregator(
         startedAtMs = currentRunStartedAtMs,
         endedAtMs = endedAtMs,
         mapName = currentRunMapName,
+        isMapRun = currentRunIsMapRun,
         items = currentRunByItem.values.sortedByDescending { kotlin.math.abs(it.value) },
     )
 

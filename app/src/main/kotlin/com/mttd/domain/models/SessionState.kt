@@ -102,6 +102,71 @@ data class SessionState(
             val e = elapsedMs
             return if (e < 5000) 0.0 else netTotalValue * 3_600_000.0 / e
         }
+
+    /**
+     * "M(매핑)타임" — 마을 등 맵 밖 시간을 빼고 **실제 맵 안에 있던 시간만** 합산.
+     * [elapsedMs]("T(토탈)타임") 는 세션 시작부터 끝까지 전부(마을 포함) 세는 것과 대조된다.
+     * [MapRun.isMapRun] 이 true 인 회차(진행 중 포함)의 [MapRun.durationMs] 합.
+     */
+    val mapElapsedMs: Long
+        get() {
+            if (!active || !baselineReady) return 0
+            return runs.filter { it.isMapRun }.sumOf { it.durationMs }
+        }
+
+    /** [incomePerHour] 의 M타임 기준 버전. */
+    val mapIncomePerHour: Double
+        get() {
+            val e = mapElapsedMs
+            return if (e < 5000) 0.0 else totalValue * 3_600_000.0 / e
+        }
+
+    /** [netIncomePerHour] 의 M타임 기준 버전. */
+    val netMapIncomePerHour: Double
+        get() {
+            val e = mapElapsedMs
+            return if (e < 5000) 0.0 else netTotalValue * 3_600_000.0 / e
+        }
+
+    /** 실제 맵으로 들어간 회차([MapRun.isMapRun]) 만. "판당 평균수익" 등에 쓴다. */
+    val mapRuns: List<MapRun>
+        get() = runs.filter { it.isMapRun }
+
+    /** 판당(맵 1회차당) 평균 수익 = 맵 회차 수익 합 / 맵 회차 수. 맵 회차가 하나도 없으면 0. */
+    val averageValuePerMap: Double
+        get() = mapRuns.let { if (it.isEmpty()) 0.0 else it.sumOf { r -> r.totalValue } / it.size }
+}
+
+/**
+ * 경과 시간/수익률을 어느 기준으로 볼지. 설정 탭에서 선택, HUD·수익 탭 헤드라인 숫자에 반영된다.
+ *
+ * - [MAPPING] ("M") — 실제 맵 안에 있던 시간만 ([SessionState.mapElapsedMs]).
+ * - [TOTAL] ("T") — 마을 포함 세션 전체 시간 ([SessionState.elapsedMs]), 기존 기본 동작.
+ */
+enum class TimeBasis(val id: String, val shortLabel: String, val label: String) {
+    MAPPING("mapping", "M", "매핑(M) — 맵 안 시간만"),
+    TOTAL("total", "T", "토탈(T) — 마을 포함 전체 시간"),
+    ;
+
+    fun elapsedMs(session: SessionState): Long = when (this) {
+        MAPPING -> session.mapElapsedMs
+        TOTAL -> session.elapsedMs
+    }
+
+    fun incomePerHour(session: SessionState): Double = when (this) {
+        MAPPING -> session.mapIncomePerHour
+        TOTAL -> session.incomePerHour
+    }
+
+    fun netIncomePerHour(session: SessionState): Double = when (this) {
+        MAPPING -> session.netMapIncomePerHour
+        TOTAL -> session.netIncomePerHour
+    }
+
+    companion object {
+        val DEFAULT = TOTAL
+        fun fromId(id: String?): TimeBasis = entries.firstOrNull { it.id == id } ?: DEFAULT
+    }
 }
 
 data class TimeSample(val timeSlotMs: Long, val cumulativeValue: Double)
@@ -123,6 +188,11 @@ data class MapRun(
     val startedAtMs: Long,
     val endedAtMs: Long? = null,
     val mapName: String? = null,
+    /**
+     * 실제 맵(`Spv3Open`)으로 연 회차인지. false 면 맵을 열기 전(마을 등)에 얻은 것을 담는
+     * 암묵적 회차 — [SessionState.mapElapsedMs] ("M타임") 은 이 값이 true 인 회차만 합산한다.
+     */
+    val isMapRun: Boolean = true,
     /**
      * 이 회차의 아이템별 누적. |가치| 내림차순.
      *

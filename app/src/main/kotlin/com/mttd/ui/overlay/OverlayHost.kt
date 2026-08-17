@@ -128,6 +128,7 @@ class OverlayHost(
             HudOverlay(
                 sessionState = sessionState,
                 priceState = priceState,
+                timeBasisFlow = prefs.timeBasisId,
                 onCollapse = { hideHud() },
                 onOpenSettings = {
                     val i = android.content.Intent(context, com.mttd.MainActivity::class.java)

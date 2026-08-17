@@ -28,6 +28,8 @@ data class RunEntity(
     @ColumnInfo(name = "started_at") val startedAtMs: Long,
     @ColumnInfo(name = "ended_at") val endedAtMs: Long?,
     @ColumnInfo(name = "map_name") val mapName: String?,
+    /** [com.mttd.domain.models.MapRun.isMapRun] — "M타임" 합산 대상 여부. */
+    @ColumnInfo(name = "is_map_run", defaultValue = "1") val isMapRun: Boolean = true,
     @ColumnInfo(name = "total_value") val totalValue: Double,
     /** 경매장 세금(1/8) 반영한 실수령 예상 합계. */
     @ColumnInfo(name = "net_total_value") val netTotalValue: Double,
@@ -56,7 +58,7 @@ interface RunDao {
      * 앱 재시작 시 요약 복원용. `items_json` 은 제외해서 메모리에 안 올린다.
      */
     @Query(
-        "SELECT id, started_at, ended_at, map_name, total_value, net_total_value, pickup_count, item_count " +
+        "SELECT id, started_at, ended_at, map_name, is_map_run, total_value, net_total_value, pickup_count, item_count " +
             "FROM map_run ORDER BY started_at ASC LIMIT :limit"
     )
     suspend fun summaries(limit: Int): List<RunSummaryRow>
@@ -75,13 +77,14 @@ data class RunSummaryRow(
     @ColumnInfo(name = "started_at") val startedAtMs: Long,
     @ColumnInfo(name = "ended_at") val endedAtMs: Long?,
     @ColumnInfo(name = "map_name") val mapName: String?,
+    @ColumnInfo(name = "is_map_run", defaultValue = "1") val isMapRun: Boolean = true,
     @ColumnInfo(name = "total_value") val totalValue: Double,
     @ColumnInfo(name = "net_total_value") val netTotalValue: Double,
     @ColumnInfo(name = "pickup_count") val pickupCount: Int,
     @ColumnInfo(name = "item_count") val itemCount: Int,
 )
 
-@Database(entities = [RunEntity::class], version = 2, exportSchema = false)
+@Database(entities = [RunEntity::class], version = 3, exportSchema = false)
 abstract class RunDatabase : RoomDatabase() {
     abstract fun runDao(): RunDao
 

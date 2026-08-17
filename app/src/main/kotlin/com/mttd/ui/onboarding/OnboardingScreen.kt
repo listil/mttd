@@ -325,11 +325,21 @@ private fun EarningsSummaryCard() {
     val session by (service?.sessionState ?: MutableStateFlow(SessionState()))
         .collectAsStateWithLifecycle()
 
+    val prefs = remember(context) { com.mttd.data.prefs.OverlayPrefs(context.applicationContext) }
+    val timeBasisId by prefs.timeBasisId.collectAsStateWithLifecycle(
+        initialValue = com.mttd.domain.models.TimeBasis.DEFAULT.id,
+    )
+    val basis = com.mttd.domain.models.TimeBasis.fromId(timeBasisId)
+
     val ticking = session.active && !session.paused && session.baselineReady
     var tick by remember { mutableStateOf(0) }
     LaunchedEffect(ticking) { while (ticking) { kotlinx.coroutines.delay(1000); tick++ } }
-    val elapsed = remember(session.startedAtMs, session.paused, tick) { session.elapsedMs }
-    val perHour = remember(session.totalValue, session.paused, tick) { session.incomePerHour }
+    val elapsed = remember(session.startedAtMs, session.paused, session.runs, basis, tick) { basis.elapsedMs(session) }
+    val perHour = remember(session.totalValue, session.paused, session.runs, basis, tick) { basis.incomePerHour(session) }
+    val mapElapsed = remember(session.runs, session.paused, tick) { session.mapElapsedMs }
+    val totalElapsed = remember(session.startedAtMs, session.paused, tick) { session.elapsedMs }
+    val mapPerHour = remember(session.totalValue, session.runs, session.paused, tick) { session.mapIncomePerHour }
+    val totalPerHour = remember(session.totalValue, session.paused, tick) { session.incomePerHour }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -396,13 +406,32 @@ private fun EarningsSummaryCard() {
             }
             Spacer(Modifier.height(4.dp))
             Row {
-                MiniStat("시간당", com.mttd.ui.overlay.formatFire(perHour) + " /h")
+                MiniStat("시간당 (${basis.shortLabel})", com.mttd.ui.overlay.formatFire(perHour) + " /h")
                 Spacer(Modifier.width(20.dp))
-                MiniStat("경과", formatElapsed(elapsed))
+                MiniStat("경과 (${basis.shortLabel})", formatElapsed(elapsed))
                 Spacer(Modifier.width(20.dp))
                 MiniStat("맵 진입", "${session.mapsEntered}")
                 Spacer(Modifier.width(20.dp))
                 MiniStat("픽업", "${session.pickupCount}")
+            }
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "M(매핑) / T(토탈) 비교",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            androidx.compose.foundation.layout.FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                MiniStat("M 경과", formatElapsed(mapElapsed))
+                MiniStat("T 경과", formatElapsed(totalElapsed))
+                MiniStat("M 시간당", com.mttd.ui.overlay.formatFire(mapPerHour) + " /h")
+                MiniStat("T 시간당", com.mttd.ui.overlay.formatFire(totalPerHour) + " /h")
+                MiniStat("판당 평균수익", com.mttd.ui.overlay.formatFire(session.averageValuePerMap))
             }
             if (!session.baselineReady) {
                 Text(
@@ -739,6 +768,9 @@ private fun OverlayCard() {
     val badgeMetricId by prefs.badgeIncomeMetric.collectAsStateWithLifecycle(
         initialValue = com.mttd.ui.overlay.BadgeIncomeMetric.DEFAULT.id,
     )
+    val timeBasisId by prefs.timeBasisId.collectAsStateWithLifecycle(
+        initialValue = com.mttd.domain.models.TimeBasis.DEFAULT.id,
+    )
 
     // 앱이 다시 포그라운드로 올 때 권한 상태 재확인
     LaunchedEffect(Unit) {
@@ -791,6 +823,42 @@ private fun OverlayCard() {
                 current = com.mttd.ui.overlay.BadgeIncomeMetric.fromId(badgeMetricId),
                 onSelect = { m -> scope.launch { prefs.setBadgeIncomeMetric(m.id) } },
             )
+
+            HorizontalDivider()
+            Text(
+                "경과·시간당 수익 기준",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TimeBasisSelector(
+                current = com.mttd.domain.models.TimeBasis.fromId(timeBasisId),
+                onSelect = { b -> scope.launch { prefs.setTimeBasisId(b.id) } },
+            )
+        }
+    }
+}
+
+/**
+ * HUD·수익 탭 헤드라인의 "경과"/"시간당" 이 M(매핑)·T(토탈) 중 어느 시간 기준을 쓸지 선택.
+ * 수익 탭은 선택과 무관하게 둘 다 항상 같이 보여준다 — 이건 그 중 대표로 내세울 하나를 고르는 것.
+ */
+@Composable
+private fun TimeBasisSelector(
+    current: com.mttd.domain.models.TimeBasis,
+    onSelect: (com.mttd.domain.models.TimeBasis) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        for (b in com.mttd.domain.models.TimeBasis.entries) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(selected = current == b, onClick = { onSelect(b) })
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = current == b, onClick = { onSelect(b) })
+                Text(b.label, style = MaterialTheme.typography.bodyMedium)
+            }
         }
     }
 }

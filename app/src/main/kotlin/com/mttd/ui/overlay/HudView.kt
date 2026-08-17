@@ -76,6 +76,8 @@ private val HOLDINGS_LIST_HEIGHT = ROW_HEIGHT * 10
 fun HudOverlay(
     sessionState: StateFlow<SessionState>,
     priceState: StateFlow<com.mttd.data.prices.PriceRepository.State>? = null,
+    /** "경과"/"시간당" 이 M(매핑)/T(토탈) 중 뭘 기준으로 보일지. 설정 탭에서 선택. */
+    timeBasisFlow: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.flowOf(com.mttd.domain.models.TimeBasis.DEFAULT.id),
     onCollapse: () -> Unit,
     onOpenSettings: () -> Unit = {},
     onTogglePause: () -> Unit = {},
@@ -90,6 +92,10 @@ fun HudOverlay(
 ) {
     val session by sessionState.collectAsStateWithLifecycle()
     val prices = priceState?.collectAsStateWithLifecycle()?.value
+    val timeBasisId by timeBasisFlow.collectAsStateWithLifecycle(
+        initialValue = com.mttd.domain.models.TimeBasis.DEFAULT.id,
+    )
+    val timeBasis = com.mttd.domain.models.TimeBasis.fromId(timeBasisId)
 
     // 0 = 수익 화면, 1 = 보유 아이템(인벤토리 시세) 화면. 거래소 진입/퇴장 때는 지금까지처럼
     // 자동으로 맞는 화면으로 넘어가고(아래 LaunchedEffect), 그 상태가 유지되는 동안엔 좌우로
@@ -120,14 +126,14 @@ fun HudOverlay(
     LaunchedEffect(ticking) {
         while (ticking) { delay(1000); tick++ }
     }
-    val elapsed = remember(session.startedAtMs, session.active, session.endedAtMs, session.paused, session.pausedAccumulatedMs, session.pausedSinceMs, tick) {
-        session.elapsedMs
+    val elapsed = remember(session.startedAtMs, session.active, session.endedAtMs, session.paused, session.pausedAccumulatedMs, session.pausedSinceMs, session.runs, timeBasis, tick) {
+        timeBasis.elapsedMs(session)
     }
-    val incomePerHour = remember(session.totalValue, session.active, session.endedAtMs, session.paused, tick) {
-        session.incomePerHour
+    val incomePerHour = remember(session.totalValue, session.active, session.endedAtMs, session.paused, session.runs, timeBasis, tick) {
+        timeBasis.incomePerHour(session)
     }
-    val netIncomePerHour = remember(session.netTotalValue, session.active, session.endedAtMs, session.paused, tick) {
-        session.netIncomePerHour
+    val netIncomePerHour = remember(session.netTotalValue, session.active, session.endedAtMs, session.paused, session.runs, timeBasis, tick) {
+        timeBasis.netIncomePerHour(session)
     }
 
     Box(
@@ -248,9 +254,9 @@ fun HudOverlay(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
-                HudStat("경과", formatElapsed(elapsed))
+                HudStat("경과 (${timeBasis.shortLabel})", formatElapsed(elapsed))
                 HudStat("총 수익", formatFire(session.totalValue) + " (${formatFire(session.netTotalValue)} TAX)")
-                HudStat("시간당", formatFire(incomePerHour) + "/h (${formatFire(netIncomePerHour)}/h TAX)")
+                HudStat("시간당 (${timeBasis.shortLabel})", formatFire(incomePerHour) + "/h (${formatFire(netIncomePerHour)}/h TAX)")
                 HudStat("맵 진입", "${session.mapsEntered}")
 
                 Spacer(Modifier.height(1.dp))
