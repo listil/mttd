@@ -544,31 +544,35 @@ fun StatusRow(label: String, ok: Boolean) {
 @Composable
 private fun AdvancedSection(userService: () -> IUserService?) {
     var expanded by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = !expanded }
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("고급", fontWeight = FontWeight.SemiBold)
-                Text(
-                    "로그 파일 진단 · 폴링 상태 (개발자용)",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("고급", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "로그 파일 진단 · 폴링 상태 (개발자용)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(
+                    if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (expanded) "접기" else "펼치기",
                 )
             }
-            Icon(
-                if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                contentDescription = if (expanded) "접기" else "펼치기",
-            )
-        }
-        if (expanded) {
-            DiagnosticLogButton()
-            ProbeCard(userService = userService)
-            LogTailCard(userService = userService)
+            if (expanded) {
+                DiagnosticLogButton()
+                ProbeCard(userService = userService)
+                LogTailCard(userService = userService)
+            }
         }
     }
 }
