@@ -58,16 +58,40 @@ enum class BadgeIncomeMetric(val id: String, val label: String, val perHour: Boo
 }
 
 /**
+ * 배지 1번째 줄(경과 시간)에 어느 시간을 보여줄지. 설정 탭에서 선택 가능.
+ */
+enum class BadgeTimeMetric(val id: String, val label: String) {
+    TOTAL("total", "T (토탈) — 마을 포함 전체 세션"),
+    MAPPING("mapping", "M (매핑) — 맵 안에 있던 시간만"),
+    CURRENT_MAP("current_map", "맵마다 — 지금 이 맵만"),
+    ;
+
+    fun elapsedMs(session: SessionState): Long = when (this) {
+        TOTAL -> session.elapsedMs
+        MAPPING -> session.mapElapsedMs
+        CURRENT_MAP -> session.runs.lastOrNull { it.inProgress }?.durationMs ?: 0L
+    }
+
+    companion object {
+        val DEFAULT = TOTAL
+        fun fromId(id: String): BadgeTimeMetric = entries.firstOrNull { it.id == id } ?: DEFAULT
+    }
+}
+
+/**
  * 최소화 뷰. 경과 시간 + 수익 지표 ([metricFlow] 로 선택, 기본은 시간당 수익).
  */
 @Composable
 fun IconOverlay(
     sessionState: StateFlow<SessionState>,
     metricFlow: Flow<String> = flowOf(BadgeIncomeMetric.DEFAULT.id),
+    timeMetricFlow: Flow<String> = flowOf(BadgeTimeMetric.DEFAULT.id),
 ) {
     val session by sessionState.collectAsStateWithLifecycle()
     val metricId by metricFlow.collectAsStateWithLifecycle(initialValue = BadgeIncomeMetric.DEFAULT.id)
     val metric = remember(metricId) { BadgeIncomeMetric.fromId(metricId) }
+    val timeMetricId by timeMetricFlow.collectAsStateWithLifecycle(initialValue = BadgeTimeMetric.DEFAULT.id)
+    val timeMetric = remember(timeMetricId) { BadgeTimeMetric.fromId(timeMetricId) }
 
     // 경과 시간을 흘려보내기 위한 1 초 틱.
     // 예전엔 `while (true)` 라 일시정지·집계 대기 상태에서도 영원히 깨어나
@@ -78,8 +102,8 @@ fun IconOverlay(
         while (ticking) { delay(1000); tick++ }
     }
 
-    val elapsed = remember(session.startedAtMs, session.active, session.endedAtMs, session.paused, tick) {
-        session.elapsedMs
+    val elapsed = remember(session.startedAtMs, session.active, session.endedAtMs, session.paused, session.runs, timeMetric, tick) {
+        timeMetric.elapsedMs(session)
     }
     val income = remember(
         session.totalValue, session.netTotalValue, session.currentMapValue,

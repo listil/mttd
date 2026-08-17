@@ -97,7 +97,11 @@ class OverlayHost(
 
         // Icon: 항상 마운트
         val icon = buildComposeView {
-            IconOverlay(sessionState = sessionState, metricFlow = prefs.badgeIncomeMetric)
+            IconOverlay(
+                sessionState = sessionState,
+                metricFlow = prefs.badgeIncomeMetric,
+                timeMetricFlow = prefs.badgeTimeMetric,
+            )
         }
         attachDragBehavior(
             view = icon,

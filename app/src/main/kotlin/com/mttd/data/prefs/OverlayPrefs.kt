@@ -33,6 +33,15 @@ class OverlayPrefs(private val context: Context) {
         context.dataStore.edit { it[KEY_BADGE_METRIC] = id }
     }
 
+    /** 배지 1번째 줄에 표시할 경과 시간 기준. 값은 [com.mttd.ui.overlay.BadgeTimeMetric.id]. */
+    val badgeTimeMetric: Flow<String> = context.dataStore.data.map {
+        it[KEY_BADGE_TIME_METRIC] ?: com.mttd.ui.overlay.BadgeTimeMetric.DEFAULT.id
+    }
+
+    suspend fun setBadgeTimeMetric(id: String) {
+        context.dataStore.edit { it[KEY_BADGE_TIME_METRIC] = id }
+    }
+
     /** 경과/시간당 수익 헤드라인 기준. 값은 [com.mttd.domain.models.TimeBasis.id]. */
     val timeBasisId: Flow<String> = context.dataStore.data.map {
         it[KEY_TIME_BASIS] ?: com.mttd.domain.models.TimeBasis.DEFAULT.id
@@ -90,5 +99,6 @@ class OverlayPrefs(private val context: Context) {
         private val KEY_PRICE_SOURCE = androidx.datastore.preferences.core.stringPreferencesKey("price_source")
         private val KEY_BADGE_METRIC = androidx.datastore.preferences.core.stringPreferencesKey("badge_income_metric")
         private val KEY_TIME_BASIS = androidx.datastore.preferences.core.stringPreferencesKey("time_basis")
+        private val KEY_BADGE_TIME_METRIC = androidx.datastore.preferences.core.stringPreferencesKey("badge_time_metric")
     }
 }

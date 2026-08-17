@@ -770,6 +770,9 @@ private fun OverlayCard() {
     val badgeMetricId by prefs.badgeIncomeMetric.collectAsStateWithLifecycle(
         initialValue = com.mttd.ui.overlay.BadgeIncomeMetric.DEFAULT.id,
     )
+    val badgeTimeMetricId by prefs.badgeTimeMetric.collectAsStateWithLifecycle(
+        initialValue = com.mttd.ui.overlay.BadgeTimeMetric.DEFAULT.id,
+    )
     val timeBasisId by prefs.timeBasisId.collectAsStateWithLifecycle(
         initialValue = com.mttd.domain.models.TimeBasis.DEFAULT.id,
     )
@@ -814,6 +817,17 @@ private fun OverlayCard() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+
+            HorizontalDivider()
+            Text(
+                "배지 1번째 줄 표시 시간",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            BadgeTimeMetricSelector(
+                current = com.mttd.ui.overlay.BadgeTimeMetric.fromId(badgeTimeMetricId),
+                onSelect = { m -> scope.launch { prefs.setBadgeTimeMetric(m.id) } },
+            )
 
             HorizontalDivider()
             Text(
@@ -865,7 +879,7 @@ private fun TimeBasisSelector(
     }
 }
 
-/** 배지(아이콘 오버레이) 2번째 줄에 어떤 수익 지표를 보여줄지 선택. 1번째 줄(경과 시간)은 고정. */
+/** 배지(아이콘 오버레이) 2번째 줄에 어떤 수익 지표를 보여줄지 선택. */
 @Composable
 private fun BadgeMetricSelector(
     current: com.mttd.ui.overlay.BadgeIncomeMetric,
@@ -873,6 +887,28 @@ private fun BadgeMetricSelector(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         for (m in com.mttd.ui.overlay.BadgeIncomeMetric.entries) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(selected = current == m, onClick = { onSelect(m) })
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = current == m, onClick = { onSelect(m) })
+                Text(m.label, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+/** 배지 1번째 줄에 어떤 경과 시간(M/T/맵마다)을 보여줄지 선택. */
+@Composable
+private fun BadgeTimeMetricSelector(
+    current: com.mttd.ui.overlay.BadgeTimeMetric,
+    onSelect: (com.mttd.ui.overlay.BadgeTimeMetric) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        for (m in com.mttd.ui.overlay.BadgeTimeMetric.entries) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
