@@ -33,12 +33,16 @@ class OverlayPrefs(private val context: Context) {
         context.dataStore.edit { it[KEY_BADGE_METRIC] = id }
     }
 
-    /**
-     * 경과/시간당 수익 기준. 값은 [com.mttd.domain.models.TimeBasis.id].
-     * 수익 탭 헤드라인, 플로팅 HUD, 배지 1번째 줄이 전부 이 값 하나를 공유한다 — 어디서
-     * 바꾸든 셋 다 같이 바뀐다(예전엔 배지만 따로 값이 있어서 설정 탭에서 바꿔도 플로팅 HUD가
-     * 안 바뀌는 것처럼 보이는 혼란이 있었다).
-     */
+    /** 배지 1번째 줄에 표시할 경과 시간 기준. 값은 [com.mttd.ui.overlay.BadgeTimeMetric.id]. */
+    val badgeTimeMetric: Flow<String> = context.dataStore.data.map {
+        it[KEY_BADGE_TIME_METRIC] ?: com.mttd.ui.overlay.BadgeTimeMetric.DEFAULT.id
+    }
+
+    suspend fun setBadgeTimeMetric(id: String) {
+        context.dataStore.edit { it[KEY_BADGE_TIME_METRIC] = id }
+    }
+
+    /** 경과/시간당 수익 헤드라인 기준. 값은 [com.mttd.domain.models.TimeBasis.id]. */
     val timeBasisId: Flow<String> = context.dataStore.data.map {
         it[KEY_TIME_BASIS] ?: com.mttd.domain.models.TimeBasis.DEFAULT.id
     }
@@ -95,5 +99,6 @@ class OverlayPrefs(private val context: Context) {
         private val KEY_PRICE_SOURCE = androidx.datastore.preferences.core.stringPreferencesKey("price_source")
         private val KEY_BADGE_METRIC = androidx.datastore.preferences.core.stringPreferencesKey("badge_income_metric")
         private val KEY_TIME_BASIS = androidx.datastore.preferences.core.stringPreferencesKey("time_basis")
+        private val KEY_BADGE_TIME_METRIC = androidx.datastore.preferences.core.stringPreferencesKey("badge_time_metric")
     }
 }
