@@ -32,20 +32,32 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
 
 /**
- * 배지 2번째 줄에 표시할 수익 지표. 설정 탭에서 선택 가능 (시간/카운트 계열은 후보에서 제외 —
- * 배지 자체가 경과 시간을 이미 1번째 줄에 보여주고, 카운트는 수익 0 일 때의 폴백으로만 쓰인다).
+ * 배지 2번째 줄에 표시할 수익 지표. 설정 탭에서 선택 가능 (카운트 계열은 후보에서 제외 —
+ * 수익 0 일 때의 폴백으로만 쓰인다).
+ *
+ * [INCOME_PER_HOUR]/[NET_INCOME_PER_HOUR] 는 고정된 시간 기준이 아니라, 배지 1번째 줄에서
+ * 고른 [BadgeTimeMetric] 을 그대로 따라간다 — 1번째 줄이 "M 경과"를 보여주면 2번째 줄
+ * 시간당 수익도 자동으로 M타임 기준으로 계산된다.
  */
 enum class BadgeIncomeMetric(val id: String, val label: String, val perHour: Boolean) {
-    INCOME_PER_HOUR("income_per_hour", "시간당 수익", perHour = true),
-    NET_INCOME_PER_HOUR("net_income_per_hour", "시간당 실수령 (TAX 제외)", perHour = true),
+    INCOME_PER_HOUR("income_per_hour", "시간당 수익 (1번째 줄 시간 기준)", perHour = true),
+    NET_INCOME_PER_HOUR("net_income_per_hour", "시간당 실수령 (1번째 줄 시간 기준, TAX 제외)", perHour = true),
     TOTAL_VALUE("total_value", "누적 총수익", perHour = false),
     NET_TOTAL_VALUE("net_total_value", "누적 실수령 (TAX 제외)", perHour = false),
     CURRENT_MAP_VALUE("current_map_value", "이번 맵 수익", perHour = false),
     ;
 
-    fun value(session: SessionState): Double = when (this) {
-        INCOME_PER_HOUR -> session.incomePerHour
-        NET_INCOME_PER_HOUR -> session.netIncomePerHour
+    fun value(session: SessionState, timeMetric: BadgeTimeMetric): Double = when (this) {
+        INCOME_PER_HOUR -> when (timeMetric) {
+            BadgeTimeMetric.TOTAL -> session.incomePerHour
+            BadgeTimeMetric.MAPPING -> session.mapIncomePerHour
+            BadgeTimeMetric.CURRENT_MAP -> session.currentMapIncomePerHour
+        }
+        NET_INCOME_PER_HOUR -> when (timeMetric) {
+            BadgeTimeMetric.TOTAL -> session.netIncomePerHour
+            BadgeTimeMetric.MAPPING -> session.netMapIncomePerHour
+            BadgeTimeMetric.CURRENT_MAP -> session.netCurrentMapIncomePerHour
+        }
         TOTAL_VALUE -> session.totalValue
         NET_TOTAL_VALUE -> session.netTotalValue
         CURRENT_MAP_VALUE -> session.currentMapValue
@@ -106,10 +118,10 @@ fun IconOverlay(
         timeMetric.elapsedMs(session)
     }
     val income = remember(
-        session.totalValue, session.netTotalValue, session.currentMapValue,
-        session.active, session.endedAtMs, session.paused, tick, metric,
+        session.totalValue, session.netTotalValue, session.currentMapValue, session.runs,
+        session.active, session.endedAtMs, session.paused, tick, metric, timeMetric,
     ) {
-        metric.value(session)
+        metric.value(session, timeMetric)
     }
 
     Box(

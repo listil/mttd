@@ -132,6 +132,26 @@ data class SessionState(
     val mapRuns: List<MapRun>
         get() = runs.filter { it.isMapRun }
 
+    /**
+     * 지금 진행 중인 회차(맵)만의 수익 속도 — "맵마다" 시간 기준(배지 등)에 쓴다.
+     * [mapIncomePerHour]/[incomePerHour] 와 달리 세션 전체가 아니라 **이번 맵 하나만**의
+     * 수익을 이번 맵 경과시간으로 나눈다. 진행 중인 회차가 없으면 0.
+     */
+    val currentMapIncomePerHour: Double
+        get() {
+            val run = runs.lastOrNull { it.inProgress } ?: return 0.0
+            val e = run.durationMs
+            return if (e < 5000) 0.0 else run.totalValue * 3_600_000.0 / e
+        }
+
+    /** [currentMapIncomePerHour] 의 세후(실수령) 버전. */
+    val netCurrentMapIncomePerHour: Double
+        get() {
+            val run = runs.lastOrNull { it.inProgress } ?: return 0.0
+            val e = run.durationMs
+            return if (e < 5000) 0.0 else run.netTotalValue * 3_600_000.0 / e
+        }
+
     /** 판당(맵 1회차당) 평균 수익 = 맵 회차 수익 합 / 맵 회차 수. 맵 회차가 하나도 없으면 0. */
     val averageValuePerMap: Double
         get() = mapRuns.let { if (it.isEmpty()) 0.0 else it.sumOf { r -> r.totalValue } / it.size }
