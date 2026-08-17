@@ -428,8 +428,8 @@ private fun EarningsSummaryCard() {
                     MiniStat("T 시간당", com.mttd.ui.overlay.formatFire(totalPerHour) + " /h")
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                    MiniStat("맵당 평균수익", com.mttd.ui.overlay.formatFire(session.averageValuePerMap), modifier = Modifier.width(timeColWidth))
-                    MiniStat("맵당 평균시간", formatElapsed(session.averageDurationPerMap))
+                    MiniStat("맵당 평균시간", formatElapsed(session.averageDurationPerMap), modifier = Modifier.width(timeColWidth))
+                    MiniStat("맵당 평균수익", com.mttd.ui.overlay.formatFire(session.averageValuePerMap))
                 }
             }
             if (!session.baselineReady) {
