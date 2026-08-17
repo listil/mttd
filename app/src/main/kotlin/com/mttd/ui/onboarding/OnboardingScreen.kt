@@ -423,14 +423,16 @@ private fun EarningsSummaryCard() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(4.dp))
-            androidx.compose.foundation.layout.FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(20.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                MiniStat("M 경과", formatElapsed(mapElapsed))
-                MiniStat("T 경과", formatElapsed(totalElapsed))
-                MiniStat("M 시간당", com.mttd.ui.overlay.formatFire(mapPerHour) + " /h")
-                MiniStat("T 시간당", com.mttd.ui.overlay.formatFire(totalPerHour) + " /h")
+            val timeColWidth = 110.dp
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    MiniStat("M 경과", formatElapsed(mapElapsed), modifier = Modifier.width(timeColWidth))
+                    MiniStat("M 시간당", com.mttd.ui.overlay.formatFire(mapPerHour) + " /h")
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    MiniStat("T 경과", formatElapsed(totalElapsed), modifier = Modifier.width(timeColWidth))
+                    MiniStat("T 시간당", com.mttd.ui.overlay.formatFire(totalPerHour) + " /h")
+                }
                 MiniStat("판당 평균수익", com.mttd.ui.overlay.formatFire(session.averageValuePerMap))
             }
             if (!session.baselineReady) {
@@ -445,8 +447,8 @@ private fun EarningsSummaryCard() {
 }
 
 @Composable
-private fun MiniStat(label: String, value: String) {
-    Column {
+private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier) {
         Text(label, style = MaterialTheme.typography.labelSmall,
              color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodyMedium,
