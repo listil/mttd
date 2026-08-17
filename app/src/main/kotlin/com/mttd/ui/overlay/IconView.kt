@@ -35,9 +35,11 @@ import kotlinx.coroutines.flow.flowOf
  * 배지 2번째 줄에 표시할 수익 지표. 설정 탭에서 선택 가능 (카운트 계열은 후보에서 제외 —
  * 수익 0 일 때의 폴백으로만 쓰인다).
  *
- * [INCOME_PER_HOUR]/[NET_INCOME_PER_HOUR] 는 고정된 시간 기준이 아니라, 배지 1번째 줄에서
- * 고른 [BadgeTimeMetric] 을 그대로 따라간다 — 1번째 줄이 "M 경과"를 보여주면 2번째 줄
- * 시간당 수익도 자동으로 M타임 기준으로 계산된다.
+ * [INCOME_PER_HOUR]/[NET_INCOME_PER_HOUR] 는 고정된 시간 기준이 아니라, 설정 탭의
+ * "경과·시간당 수익 기준"([com.mttd.domain.models.TimeBasis]) 을 그대로 따라간다 — 이 값은
+ * 수익 탭 헤드라인, 플로팅 HUD, 배지가 전부 공유하는 단일 설정이라 어디서 바꾸든 셋 다 같이
+ * 바뀐다(예전엔 배지 1번째 줄만 따로 선택할 수 있었는데, 그러면 설정 탭에서 M/T 를 바꿔도
+ * 플로팅 HUD 는 안 바뀌는 것처럼 보이는 혼란이 있어서 하나로 합침).
  */
 enum class BadgeIncomeMetric(val id: String, val label: String, val perHour: Boolean) {
     INCOME_PER_HOUR("income_per_hour", "M/T 시간당 수익", perHour = true),
@@ -47,15 +49,9 @@ enum class BadgeIncomeMetric(val id: String, val label: String, val perHour: Boo
     CURRENT_MAP_VALUE("current_map_value", "이번 맵 수익", perHour = false),
     ;
 
-    fun value(session: SessionState, timeMetric: BadgeTimeMetric): Double = when (this) {
-        INCOME_PER_HOUR -> when (timeMetric) {
-            BadgeTimeMetric.TOTAL -> session.incomePerHour
-            BadgeTimeMetric.MAPPING -> session.mapIncomePerHour
-        }
-        NET_INCOME_PER_HOUR -> when (timeMetric) {
-            BadgeTimeMetric.TOTAL -> session.netIncomePerHour
-            BadgeTimeMetric.MAPPING -> session.netMapIncomePerHour
-        }
+    fun value(session: SessionState, timeBasis: com.mttd.domain.models.TimeBasis): Double = when (this) {
+        INCOME_PER_HOUR -> timeBasis.incomePerHour(session)
+        NET_INCOME_PER_HOUR -> timeBasis.netIncomePerHour(session)
         TOTAL_VALUE -> session.totalValue
         NET_TOTAL_VALUE -> session.netTotalValue
         CURRENT_MAP_VALUE -> session.currentMapValue
@@ -68,42 +64,24 @@ enum class BadgeIncomeMetric(val id: String, val label: String, val perHour: Boo
 }
 
 /**
- * 배지 1번째 줄(경과 시간)에 어느 시간을 보여줄지. 설정 탭에서 선택 가능.
- *
- * "맵마다"(지금 이 맵만)는 후보에서 뺐다 — 배지 2번째 줄 시간당 수익이 이 기준을 그대로
- * 따라가는데, 맵 하나만의 순간 속도는 방금 산 값 하나에도 요동쳐서 배지처럼 작은 공간에선
- * 오히려 헷갈린다는 피드백으로 제외. 그 값은 수익 탭의 "이번 맵" 쪽에서 보면 된다.
- */
-enum class BadgeTimeMetric(val id: String, val label: String) {
-    TOTAL("total", "T (토탈) — 마을 포함 전체 세션"),
-    MAPPING("mapping", "M (매핑) — 맵 안에 있던 시간만"),
-    ;
-
-    fun elapsedMs(session: SessionState): Long = when (this) {
-        TOTAL -> session.elapsedMs
-        MAPPING -> session.mapElapsedMs
-    }
-
-    companion object {
-        val DEFAULT = TOTAL
-        fun fromId(id: String): BadgeTimeMetric = entries.firstOrNull { it.id == id } ?: DEFAULT
-    }
-}
-
-/**
  * 최소화 뷰. 경과 시간 + 수익 지표 ([metricFlow] 로 선택, 기본은 시간당 수익).
+ *
+ * 1번째 줄(경과 시간)은 [timeBasisFlow] — 설정 탭 "경과·시간당 수익 기준"과 공유하는 값이라
+ * 수익 탭/플로팅 HUD와 항상 같은 기준을 보여준다.
  */
 @Composable
 fun IconOverlay(
     sessionState: StateFlow<SessionState>,
     metricFlow: Flow<String> = flowOf(BadgeIncomeMetric.DEFAULT.id),
-    timeMetricFlow: Flow<String> = flowOf(BadgeTimeMetric.DEFAULT.id),
+    timeBasisFlow: Flow<String> = flowOf(com.mttd.domain.models.TimeBasis.DEFAULT.id),
 ) {
     val session by sessionState.collectAsStateWithLifecycle()
     val metricId by metricFlow.collectAsStateWithLifecycle(initialValue = BadgeIncomeMetric.DEFAULT.id)
     val metric = remember(metricId) { BadgeIncomeMetric.fromId(metricId) }
-    val timeMetricId by timeMetricFlow.collectAsStateWithLifecycle(initialValue = BadgeTimeMetric.DEFAULT.id)
-    val timeMetric = remember(timeMetricId) { BadgeTimeMetric.fromId(timeMetricId) }
+    val timeBasisId by timeBasisFlow.collectAsStateWithLifecycle(
+        initialValue = com.mttd.domain.models.TimeBasis.DEFAULT.id,
+    )
+    val timeBasis = remember(timeBasisId) { com.mttd.domain.models.TimeBasis.fromId(timeBasisId) }
 
     // 경과 시간을 흘려보내기 위한 1 초 틱.
     // 예전엔 `while (true)` 라 일시정지·집계 대기 상태에서도 영원히 깨어나
@@ -114,14 +92,14 @@ fun IconOverlay(
         while (ticking) { delay(1000); tick++ }
     }
 
-    val elapsed = remember(session.startedAtMs, session.active, session.endedAtMs, session.paused, session.runs, timeMetric, tick) {
-        timeMetric.elapsedMs(session)
+    val elapsed = remember(session.startedAtMs, session.active, session.endedAtMs, session.paused, session.runs, timeBasis, tick) {
+        timeBasis.elapsedMs(session)
     }
     val income = remember(
         session.totalValue, session.netTotalValue, session.currentMapValue, session.runs,
-        session.active, session.endedAtMs, session.paused, tick, metric, timeMetric,
+        session.active, session.endedAtMs, session.paused, tick, metric, timeBasis,
     ) {
-        metric.value(session, timeMetric)
+        metric.value(session, timeBasis)
     }
 
     Box(

@@ -100,7 +100,7 @@ class OverlayHost(
             IconOverlay(
                 sessionState = sessionState,
                 metricFlow = prefs.badgeIncomeMetric,
-                timeMetricFlow = prefs.badgeTimeMetric,
+                timeBasisFlow = prefs.timeBasisId,
             )
         }
         attachDragBehavior(
