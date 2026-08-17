@@ -193,6 +193,7 @@ fun OnboardingScreen(
                         // 오히려 더 필요하므로 ready 게이트 밖에 둔다.
                         AdvancedSection(userService = userService)
                         TextButton(onClick = onReopenWizard) { Text("설정 가이드 다시 보기") }
+                        ContactCard()
                         ExitCard()
                     }
                 }
@@ -1185,6 +1186,39 @@ private fun UpdateCheckButton() {
             if (checking) "확인 중..." else "업데이트 확인",
             style = MaterialTheme.typography.labelMedium,
         )
+    }
+}
+
+@Composable
+private fun ContactCard() {
+    val context = LocalContext.current
+    fun openUrl(url: String) {
+        val i = android.content.Intent(
+            android.content.Intent.ACTION_VIEW,
+            android.net.Uri.parse(url),
+        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(i)
+    }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("문의 / 후원", fontWeight = FontWeight.SemiBold)
+            Text(
+                "오픈카톡",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { openUrl("https://open.kakao.com/o/gKyqLeJi") },
+            )
+            Text(
+                "Ko-fi 후원하기",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { openUrl("https://ko-fi.com/listil") },
+            )
+        }
     }
 }
 
