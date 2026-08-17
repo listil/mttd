@@ -128,13 +128,17 @@ data class SessionState(
             return if (e < 5000) 0.0 else netTotalValue * 3_600_000.0 / e
         }
 
-    /** 실제 맵으로 들어간 회차([MapRun.isMapRun]) 만. "판당 평균수익" 등에 쓴다. */
+    /** 실제 맵으로 들어간 회차([MapRun.isMapRun]) 만. "맵당 평균수익" 등에 쓴다. */
     val mapRuns: List<MapRun>
         get() = runs.filter { it.isMapRun }
 
-    /** 판당(맵 1회차당) 평균 수익 = 맵 회차 수익 합 / 맵 회차 수. 맵 회차가 하나도 없으면 0. */
+    /** 맵당(맵 1회차당) 평균 수익 = 맵 회차 수익 합 / 맵 회차 수. 맵 회차가 하나도 없으면 0. */
     val averageValuePerMap: Double
         get() = mapRuns.let { if (it.isEmpty()) 0.0 else it.sumOf { r -> r.totalValue } / it.size }
+
+    /** 맵당(맵 1회차당) 평균 소요 시간 = 맵 회차 경과시간 합 / 맵 회차 수. 맵 회차가 하나도 없으면 0. */
+    val averageDurationPerMap: Long
+        get() = mapRuns.let { if (it.isEmpty()) 0L else it.sumOf { r -> r.durationMs } / it.size }
 }
 
 /**

@@ -417,12 +417,6 @@ private fun EarningsSummaryCard() {
             Spacer(Modifier.height(8.dp))
             HorizontalDivider()
             Spacer(Modifier.height(8.dp))
-            Text(
-                "M(매핑) / T(토탈) 비교",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(4.dp))
             val timeColWidth = 110.dp
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -433,7 +427,10 @@ private fun EarningsSummaryCard() {
                     MiniStat("T 경과", formatElapsed(totalElapsed), modifier = Modifier.width(timeColWidth))
                     MiniStat("T 시간당", com.mttd.ui.overlay.formatFire(totalPerHour) + " /h")
                 }
-                MiniStat("판당 평균수익", com.mttd.ui.overlay.formatFire(session.averageValuePerMap))
+                Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    MiniStat("맵당 평균수익", com.mttd.ui.overlay.formatFire(session.averageValuePerMap), modifier = Modifier.width(timeColWidth))
+                    MiniStat("맵당 평균시간", formatElapsed(session.averageDurationPerMap))
+                }
             }
             if (!session.baselineReady) {
                 Text(
