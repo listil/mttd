@@ -814,17 +814,6 @@ private fun OverlayCard() {
 
             HorizontalDivider()
             Text(
-                "배지 2번째 줄 표시값",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            BadgeMetricSelector(
-                current = com.mttd.ui.overlay.BadgeIncomeMetric.fromId(badgeMetricId),
-                onSelect = { m -> scope.launch { prefs.setBadgeIncomeMetric(m.id) } },
-            )
-
-            HorizontalDivider()
-            Text(
                 "경과·시간당 수익 기준 (수익 탭·플로팅 HUD·배지 공용)",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -832,6 +821,17 @@ private fun OverlayCard() {
             TimeBasisSelector(
                 current = com.mttd.domain.models.TimeBasis.fromId(timeBasisId),
                 onSelect = { b -> scope.launch { prefs.setTimeBasisId(b.id) } },
+            )
+
+            HorizontalDivider()
+            Text(
+                "배지 2번째 줄 표시값",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            BadgeMetricSelector(
+                current = com.mttd.ui.overlay.BadgeIncomeMetric.fromId(badgeMetricId),
+                onSelect = { m -> scope.launch { prefs.setBadgeIncomeMetric(m.id) } },
             )
         }
     }
