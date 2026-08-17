@@ -670,9 +670,18 @@ class SessionAggregator(
      * 놓쳐 [ensureCurrentRun] 이 암묵적 회차(`isMapRun=false`)로 잡았더라도, 여기서 소급
      * 확정해준다 — 안 그러면 그 맵 전체가 영영 M(매핑)타임에서 빠진다(실기기 재현: 앱 재시작
      * 직후 첫 맵만 M경과가 0에 고정).
+     *
+     * 포탈로 바로 다음 맵을 열 때, **직전 씬을 나가는 이 신호가 새 맵 자신의 Spv3Open 이 연
+     * 회차와 같은 전환 블록 안에(~100ms 차이로) 같이 찍히는 경우가 실기기에서 확인됐다** —
+     * 그대로 닫으면 방금 연 회차(맵 열기 소비만 담김)와 그 이후 실제 파밍 아이템이 담길 새
+     * 암묵적 회차가 쪼개져서, 맵 하나를 돌았는데 회차가 2개로 나뉘고 판당 평균수익도 반토막
+     * 난다. 회차가 열린 지 얼마 안 됐으면([MAP_EXIT_GRACE_MS] 이내) 이 신호는 전환 잡음으로
+     * 보고 무시한다 — 진짜 나가는 신호라면 다음 Spv3Open 이나 그다음 진짜 나가는 신호가 늦게
+     * 닫아줄 뿐, 안 닫히고 사라지진 않는다.
      */
     private fun endCurrentRunOnMapExit() {
         if (currentRunId < 0) return
+        if (System.currentTimeMillis() - currentRunStartedAtMs < MAP_EXIT_GRACE_MS) return
         currentRunIsMapRun = true
         closeCurrentRun()
         publishRuns()
@@ -1019,6 +1028,13 @@ class SessionAggregator(
         private const val MAX_XCHG_BLOCK_LINES = 400
         /** 보관할 최대 회차 수. 넘으면 오래된 것부터 버린다. */
         private const val MAX_RUNS = 200
+        /**
+         * [endCurrentRunOnMapExit] 무시 임계값. 실기기 실측: 포탈로 바로 다음 맵을 열 때
+         * "OnExit Level" 이 그 맵의 Spv3Open 으로부터 ~100ms 뒤 같은 전환 블록 안에 찍혔다 —
+         * 여유를 크게 둬도 진짜 파밍 플레이 시간(최소 몇 초~수십 초)과는 자릿수 차이가 나서
+         * 오탐 걱정은 없다.
+         */
+        private const val MAP_EXIT_GRACE_MS = 500L
         /** "가치" 탭/HUD 에 보여줄 최대 보유 아이템 종류 수 (가치 내림차순으로 자름). */
         private const val MAX_HOLDINGS = 50
         const val MAX_TIME_SAMPLES = 60   // 1분당 1점 × 60 = 최근 1시간
