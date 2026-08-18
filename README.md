@@ -139,6 +139,9 @@ Shizuku가 이미 돌고 있다면 다음 단계로 넘어가면 된다.
 그 경로는 열지 않았다. 자동 업데이트를 원하면 [Obtainium](https://github.com/ImranR98/Obtainium)
 같은 도구에 이 저장소를 등록하면 된다.
 
+## Connect
+- 오픈카톡: https://open.kakao.com/o/gKyqLeJi
+
 ## 라이선스
 
 [MIT](LICENSE)
