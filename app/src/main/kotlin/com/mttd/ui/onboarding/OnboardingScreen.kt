@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -252,7 +253,15 @@ private fun UpdateBanner() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (u.notes.isNotBlank()) {
-                    Text(parseSimpleMarkdown(u.notes), style = MaterialTheme.typography.bodySmall, maxLines = 6)
+                    // maxLines로 자르면 뒷부분이 그냥 잘려서 안 보였다 — 대신 높이를 제한하고
+                    // 그 안에서 스크롤해서 전체 내용을 볼 수 있게 한다.
+                    Text(
+                        parseSimpleMarkdown(u.notes),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .heightIn(max = 160.dp)
+                            .verticalScroll(rememberScrollState()),
+                    )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
