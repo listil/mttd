@@ -50,7 +50,7 @@ object DirectDaemonStarter {
     private const val ANNOUNCE_INTERVAL_MS = 15_000L
 
     /** 클래스 doc의 "자동 만료" 참조 — 넉넉하게 잡아 정상적인 재시작/백그라운드 전환 중 오탐 방지. */
-    private const val SELF_EXPIRE_AFTER_MS = 60 * 60_000L // 1시간
+    private const val SELF_EXPIRE_AFTER_MS = 12 * 60 * 60_000L // 12시간
 
     @JvmStatic
     fun main(args: Array<String>) {
