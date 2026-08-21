@@ -39,6 +39,11 @@ phase0/
 # scripts/capture-log.sh local checkpoint state
 .log-capture-mark
 
+# 개인용 랭킹 데이터 추출 스크립트/산출물 (프로젝트 소스 아님)
+hero_ranking.csv
+hero_ranking.json
+convert_ranking.js
+
 # 로컬에만 두고 원격 저장소엔 커밋하지 않음 (팀 지침).
 CLAUDE.md
 scripts/
