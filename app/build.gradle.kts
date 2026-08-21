@@ -1,3 +1,5 @@
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Properties
 
 plugins {
@@ -37,6 +39,14 @@ android {
 
         // 인앱 업데이트 확인이 조회할 저장소.
         buildConfigField("String", "UPDATE_REPO", "\"${project.findProperty("updateRepo") ?: "listil/mttd"}\"")
+
+        // versionCode/versionName은 릴리스 단위로만 올라가서, 디버그 반복 빌드 중엔 여러 번
+        // 다시 설치해도 진단 로그에서 "어느 빌드였는지"가 구분이 안 됐다 — 빌드마다 바뀌는
+        // 타임스탬프를 넣어서 DiagnosticLog 헤더로 바로 확인 가능하게 한다.
+        buildConfigField(
+            "String", "BUILD_TIME",
+            "\"${SimpleDateFormat("MM-dd HH:mm:ss").format(Date())}\"",
+        )
     }
 
     // 두 개의 독립 APK: `shizuku`(기본, 오늘까지의 앱 그대로) / `direct`(Shizuku 없이 무선

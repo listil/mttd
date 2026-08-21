@@ -76,6 +76,9 @@ object DiagnosticLog {
 
     private fun header(): String = buildString {
         appendLine("mTTD ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}), flavor=${BuildConfig.FLAVOR}")
+        // versionCode/versionName은 릴리스 단위로만 올라가서 디버그 반복 빌드끼리 구분이 안 된다
+        // — 빌드 시각으로 "지금 이 로그가 어느 소스 상태에서 나왔는지" 바로 확인한다.
+        if (BuildConfig.DEBUG) appendLine("Build: ${BuildConfig.BUILD_TIME}")
         appendLine("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
         appendLine("Exported: ${timeFmt.format(Date())}")
     }
