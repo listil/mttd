@@ -51,6 +51,9 @@ class SessionAggregator(
         finishedRuns.clear()
         sessionItemTotals.clear()
         currentRunId = -1
+        currentRunStartedAtLogMs = null
+        pendingMapExitConfirm = false
+        lastRunSnapshotForDisplay = null
         currentRunMapName = null
         currentRunIsMapRun = false
         nextRunId = 1
@@ -148,6 +151,41 @@ class SessionAggregator(
 
     // 모바일 로그에서 뽑을 수 있는 필드 정규식들.
     private val levelInfoRegex = Regex("""LevelUid,\s*LevelType,\s*LevelId\s*=\s*(\d+)\s+(\d+)\s+(\d+)""")
+
+    /**
+     * 각 로그 줄 맨 앞의 `[2026.08.21-12.34.11:440]` 타임스탬프.
+     *
+     * [endCurrentRunOnMapExit] 의 유예시간 판정은 원래 [System.currentTimeMillis]
+     * (그 줄을 실제로 *처리한* 시각) 을 썼는데, 폴링이 청크 경계에서 두 줄을 서로 다른
+     * 주기로 나눠 읽으면 로그상 100ms 차이인 이벤트가 처리 시각으로는 500ms 넘게 벌어져
+     * 보여 "전환 잡음"을 진짜 나가는 신호로 오판할 수 있다 — 태블릿 실기기 캡처로 확인
+     * (Spv3Open 으로부터 100ms 뒤 OnExit Level 인데도 회차가 갈라짐). 폴링 타이밍에
+     * 좌우되지 않게 이 판정만 로그 자체의 타임스탬프로 계산한다.
+     */
+    private val logLineTimestampRegex =
+        Regex("""^\[(\d{4})\.(\d{2})\.(\d{2})-(\d{2})\.(\d{2})\.(\d{2}):(\d{3})\]""")
+
+    /**
+     * 절대 시각(타임존)은 관심 없고 두 줄 사이의 실제 간격만 필요하다. 실제 달력 연산
+     * ([java.time.LocalDateTime])으로 epoch ms 를 구해야 월마다 일수가 다른 것도 정확히
+     * 반영된다 — 이전엔 월을 그냥 31일 고정으로 이어붙였는데, 그러면 예를 들어 1월 31일
+     * 23시대 줄과 2월 1일 0시대 줄처럼 월 경계를 걸치는 두 줄의 실제 간격이 수백 ms 여도
+     * 계산상 하루치(86,400,000 ms)가 더 얹혀서, 전환 잡음([MAP_EXIT_GRACE_MS] 이내)을 진짜
+     * 나가는 신호로 오판할 수 있었다(자정 근처에서만 터지는 희귀 케이스라 [endCurrentRunOnMapExit]
+     * 재작업 당시엔 못 잡았음).
+     */
+    private fun parseLineLogMs(line: String): Long? {
+        val m = logLineTimestampRegex.find(line) ?: return null
+        val g = m.groupValues
+        return try {
+            java.time.LocalDateTime.of(
+                g[1].toInt(), g[2].toInt(), g[3].toInt(),
+                g[4].toInt(), g[5].toInt(), g[6].toInt(), g[7].toInt() * 1_000_000,
+            ).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        } catch (e: java.time.DateTimeException) {
+            null
+        }
+    }
 
     /**
      * 슬롯 상태 라인. 두 변종이 있고 포맷은 동일하다:
@@ -311,6 +349,19 @@ class SessionAggregator(
     private val sessionItemTotals = LinkedHashMap<String, PickupSummary>()
     private var currentRunId: Long = -1
     private var currentRunStartedAtMs: Long = 0
+    /** [currentRunStartedAtMs] 의 로그-타임스탬프 버전 — [endCurrentRunOnMapExit] 유예시간
+     *  판정 전용. [startNewRun] 이 아니라 [ensureCurrentRun] 으로 열린 암묵적 회차에는 없다(null). */
+    private var currentRunStartedAtLogMs: Long? = null
+    /** [endCurrentRunOnMapExit] 이 유예시간을 넘긴 나가는 신호를 봤지만, 목적지가 마을인지
+     *  아직 확정 못 한 상태 — [confirmPendingMapExit] 참조. */
+    private var pendingMapExitConfirm = false
+    /**
+     * 방금 닫힌 회차의 전체 아이템 스냅샷 — [publishRuns] 가 "이번 맵" HUD 로 새 맵이 열리기
+     * 전까지 계속 보여준다. 맵을 나오자마자 "이번 맵" 이 비어 보이는 대신, 마을에서 방금 결과를
+     * 계속 볼 수 있게. [startNewRun] 이 진짜 새 맵을 열 때 지운다 — [finishedRuns] 의 요약과
+     * 달리 아이템 전체를 들고 있지만 항상 최대 1개뿐이라 메모리 상한 설계에 영향 없다.
+     */
+    private var lastRunSnapshotForDisplay: MapRun? = null
     private var currentRunMapName: String? = null
     /**
      * 이번 회차가 실제 맵(Spv3Open)으로 열렸는지, 맵 열기 전 획득을 담는 암묵적 회차
@@ -377,11 +428,18 @@ class SessionAggregator(
         if (exchangeExitRegex.containsMatchIn(line)) { exitExchange(); return }
 
         // 맵 열기 = 새 런 시작. 이 직후의 소비(마이너스) 항목부터 "이번 진입" 에 쌓인다.
-        if (mapOpenStartRegex.containsMatchIn(line)) startNewRun()
+        if (mapOpenStartRegex.containsMatchIn(line)) startNewRun(parseLineLogMs(line))
 
-        // 맵에서 나감 = 진행 중이던 회차를 여기서 닫는다. 다음 맵을 바로 안 열어도
-        // (마을에서 정비 등) 경과시간이 그 사이 계속 늘어나지 않게.
-        if (mapExitRegex.containsMatchIn(line)) endCurrentRunOnMapExit()
+        // 맵에서 나감(그럴 수도 있는) 신호. 진짜 나가는 건지는 바로 다음에 오는 LevelUid 로
+        // 확정한다 — [confirmPendingMapExit] 참조.
+        if (mapExitRegex.containsMatchIn(line)) endCurrentRunOnMapExit(parseLineLogMs(line))
+
+        // "AudioBGM OnExit Level" 뒤에는 실측상 항상 곧바로 목적지 LevelUid 가 온다 — 그걸로
+        // 방금 그 나가는 신호가 진짜 마을 복귀였는지, 같은 컴퍼스 안의 다음 하위 구역으로 가는
+        // 포탈이었을 뿐인지 확정한다.
+        if (pendingMapExitConfirm) {
+            levelInfoRegex.find(line)?.let { confirmPendingMapExit(it.groupValues[1]) }
+        }
 
         // 가방 스냅샷 시작 → 계산 시작 (게임 응답 배치를 다 기다리지 않고 바로)
         if (bagSnapshotStartRegex.containsMatchIn(line)) {
@@ -506,7 +564,9 @@ class SessionAggregator(
         line.contains("MapName") ||
         line.contains("OnEnterArea") ||
         line.contains("AuctionHouseV2") ||
-        line.contains("OnExit Level")
+        line.contains("OnExit Level") ||
+        // [confirmPendingMapExit] 이 목적지를 확인할 "LevelUid, LevelType, LevelId = …" 줄.
+        line.contains("LevelUid")
 
     /**
      * 경매장 시세 조회(`XchgSearchPrice`) 블록 처리.
@@ -659,39 +719,83 @@ class SessionAggregator(
     }
 
     /**
-     * 맵에서 나감([mapExitRegex]) — 진행 중인 회차를 여기서 닫는다.
+     * 맵에서 나감(**일 수도 있는**) 신호([mapExitRegex]) — 실측: "AudioBGM OnExit Level" 은
+     * 마을로 돌아갈 때뿐 아니라, **같은 컴퍼스로 산 맵 안에서 다음 하위 구역으로 자동 포탈 탈
+     * 때도** 똑같이 찍힌다(태블릿 캡처: 나침반 8개 소비 뒤 Spv3Open 없이 5초 만에 다른 진짜
+     * 맵(LevelId 5357)으로 포탈). 그래서 이 신호만 보고 바로 닫으면 안 되고, 실측상 이 줄
+     * 직후 항상 곧바로 오는 목적지 LevelUid 를 봐야 "진짜 마을 복귀"인지 "같은 회차 안의
+     * 다음 구역"인지 구분된다 — 여기선 유예시간만 걸러내고 [pendingMapExitConfirm] 을
+     * 세워서 실제 판정은 [confirmPendingMapExit] 에 맡긴다.
      *
-     * [startNewRun] 과 달리 새 회차를 열지는 않는다 — 마을에서 주운 것은 다음 [handleModfy]
-     * 가 [ensureCurrentRun] 으로, 다음 맵은 다음 [startNewRun] 이 각자 알아서 새로 연다.
-     * 이미 닫혀 있으면(currentRunId < 0) [closeCurrentRun] 이 알아서 아무 것도 안 한다.
+     * 포탈로 바로 다음 맵을 열 때(=진짜 새 컴퍼스), 직전 씬을 나가는 이 신호가 새 맵 자신의
+     * Spv3Open 이 연 회차와 같은 전환 블록 안에(~100ms 차이로) 같이 찍히는 경우도 실기기에서
+     * 확인됐다 — 그대로 반영하면 맵 열기 소비만 담긴 회차와 실제 파밍 아이템이 담길 회차가
+     * 쪼개진다. 회차가 열린 지 얼마 안 됐으면([MAP_EXIT_GRACE_MS] 이내) 이 신호는 전환 잡음
+     * 으로 보고 무시한다.
      *
-     * 이 신호 자체가 "방금 그 회차는 진짜 맵이었다"는 증거다 — 실기기 캡처 전부에서 Spv3Open
-     * 없이는 한 번도 안 나타났다. 그래서 폴링이 맵 한가운데서 (재)시작돼 그 맵의 Spv3Open을
-     * 놓쳐 [ensureCurrentRun] 이 암묵적 회차(`isMapRun=false`)로 잡았더라도, 여기서 소급
-     * 확정해준다 — 안 그러면 그 맵 전체가 영영 M(매핑)타임에서 빠진다(실기기 재현: 앱 재시작
-     * 직후 첫 맵만 M경과가 0에 고정).
-     *
-     * 포탈로 바로 다음 맵을 열 때, **직전 씬을 나가는 이 신호가 새 맵 자신의 Spv3Open 이 연
-     * 회차와 같은 전환 블록 안에(~100ms 차이로) 같이 찍히는 경우가 실기기에서 확인됐다** —
-     * 그대로 닫으면 방금 연 회차(맵 열기 소비만 담김)와 그 이후 실제 파밍 아이템이 담길 새
-     * 암묵적 회차가 쪼개져서, 맵 하나를 돌았는데 회차가 2개로 나뉘고 판당 평균수익도 반토막
-     * 난다. 회차가 열린 지 얼마 안 됐으면([MAP_EXIT_GRACE_MS] 이내) 이 신호는 전환 잡음으로
-     * 보고 무시한다 — 진짜 나가는 신호라면 다음 Spv3Open 이나 그다음 진짜 나가는 신호가 늦게
-     * 닫아줄 뿐, 안 닫히고 사라지진 않는다.
+     * [lineLogMs] 는 이 "나가는" 줄 자체의 로그 타임스탬프([parseLineLogMs]) — 유예시간을
+     * [currentRunStartedAtLogMs] 와의 로그-시간 차로 판정해서, 폴링이 두 줄을 서로 다른
+     * 주기로 나눠 읽어도(처리 시각 기준으론 500ms 넘어 보여도) 오판하지 않는다. 로그 타임스탬프를
+     * 못 읽었거나(파싱 실패) 이번 회차가 [ensureCurrentRun] 으로 연 암묵적 회차라 로그 시작
+     * 시각이 없으면([currentRunStartedAtLogMs] null) 기존처럼 처리 시각([currentRunStartedAtMs])
+     * 으로 대체 판정한다.
      */
-    private fun endCurrentRunOnMapExit() {
+    private fun endCurrentRunOnMapExit(lineLogMs: Long? = null) {
         if (currentRunId < 0) return
-        if (System.currentTimeMillis() - currentRunStartedAtMs < MAP_EXIT_GRACE_MS) return
+        val startLogMs = currentRunStartedAtLogMs
+        val elapsed = if (lineLogMs != null && startLogMs != null) {
+            lineLogMs - startLogMs
+        } else {
+            System.currentTimeMillis() - currentRunStartedAtMs
+        }
+        if (elapsed < MAP_EXIT_GRACE_MS) return
+        pendingMapExitConfirm = true
+    }
+
+    /**
+     * [endCurrentRunOnMapExit] 이 세운 [pendingMapExitConfirm] 을, 그 직후에 온 목적지
+     * [destinationLevelUid] 로 확정한다.
+     *
+     * - 목적지가 마을([TOWN_LEVEL_UID]) 이면 진짜 나가는 신호였다 — 이 신호 자체가 "방금 그
+     *   회차는 진짜 맵이었다"는 증거이기도 하다(실기기 캡처 전부에서 Spv3Open 없이는 한 번도
+     *   안 나타났다). 그래서 폴링이 맵 한가운데서 (재)시작돼 Spv3Open 을 놓쳐 [ensureCurrentRun]
+     *   이 암묵적 회차로 잡았더라도, 여기서 소급 확정해준다.
+     * - 목적지가 마을이 아니면(같은 회차 안에서 다음 하위 구역으로 이어지는 포탈) 회차를 그대로
+     *   유지한다 — 아무것도 안 닫는다.
+     *
+     * 마을로 확정됐는데 실제로 하나도 못 주운 채(맵 열기 소비만 있음) 나가는 경우, 독립된
+     * 회차로 끊어서 기록하지 않는다. 그대로 끊으면 나침반 소비가 그 회차에만 담긴 채 flush
+     * 돼서, 방금 그 소비를 냈는데도 "이번 맵" 에는 하나도 안 보이는(다음 회차는 빈 상태로
+     * 시작하는) 상태가 되어 사용자가 "나침반 안 쓰고 도나?" 라고 혼동한다. currentRunByItem
+     * 을 그대로 두고 currentRunId 만 닫으면, 다음 [ensureCurrentRun] 이 이걸 이어받아서 곧이어
+     * 들어오는 진짜 파밍 픽업과 같은 회차로 자연스럽게 합쳐진다.
+     */
+    private fun confirmPendingMapExit(destinationLevelUid: String) {
+        if (!pendingMapExitConfirm) return
+        pendingMapExitConfirm = false
+        if (destinationLevelUid != TOWN_LEVEL_UID) return   // 같은 회차 안의 다음 구역 — 회차 유지
+
         currentRunIsMapRun = true
+        if (currentRunByItem.values.none { it.quantity > 0 }) {
+            currentRunId = -1
+            publishRuns()
+            return
+        }
         closeCurrentRun()
         publishRuns()
     }
 
     /** 새 맵 시작 — 진행 중이던 회차를 닫아 기록으로 넘기고, "이번 맵" 을 비운다. */
-    private fun startNewRun() {
+    private fun startNewRun(lineLogMs: Long? = null) {
         closeCurrentRun()
+        // 진짜 새 컴퍼스를 열었으니, 직전의 "나가는 신호 확인 대기" 는 더 이상 의미가 없다 —
+        // 이 회차엔 적용 안 된다(안 지우면 나중에 엉뚱한 LevelUid 가 이 새 회차를 잘못 닫을 수 있음).
+        pendingMapExitConfirm = false
+        // 새 맵이 열렸으니 "이번 맵" HUD 가 보여주던 직전 맵 스냅샷은 이제 지운다.
+        lastRunSnapshotForDisplay = null
         currentRunId = nextRunId++
         currentRunStartedAtMs = System.currentTimeMillis()
+        currentRunStartedAtLogMs = lineLogMs
         currentRunMapName = null
         currentRunIsMapRun = true
         currentRunByItem.clear()
@@ -703,6 +807,13 @@ class SessionAggregator(
      *
      * 아이템 목록은 [onRunFinished] 로 디스크에 내리고 **메모리에는 요약만** 남긴다.
      * 회차가 늘어도 프로세스 메모리가 선형으로 늘지 않게 하는 핵심 지점.
+     *
+     * [currentRunByItem] 을 여기서 비우는 게 중요하다 — 안 비우면 [endCurrentRunOnMapExit]
+     * 처럼 바로 [startNewRun] 이 뒤따르지 않는 종료 경로에서, 다음 [ensureCurrentRun] 이 여는
+     * 암묵적 회차가 방금 닫은 회차의 아이템을 그대로 이어받아 그 값이 새 회차로 한 번 더
+     * 기록된다 — 실기기 캡처로 확인(맵 나간 뒤 경매장 거래 한 번만 있어도 재현, 나침반 소비까지
+     * 포함해서 수익이 통째로 두 번 잡힘). [startNewRun] 의 명시적 `.clear()` 는 이제 중복이지만
+     * 안전망으로 남겨둔다.
      */
     private fun closeCurrentRun() {
         if (currentRunId < 0) return
@@ -712,7 +823,11 @@ class SessionAggregator(
             finishedRuns += run.toSummary()
             // 메모리 상한. 디스크 쪽 상한은 RunRepository.MAX_STORED_RUNS.
             while (finishedRuns.size > MAX_RUNS) finishedRuns.removeAt(0)
+            // "이번 맵" HUD 용 스냅샷(아이템 전체 포함) — [publishRuns] 가 새 맵이 열리기 전까지
+            // 계속 보여준다. [startNewRun] 이 다음 맵을 열 때 지운다.
+            lastRunSnapshotForDisplay = run
         }
+        currentRunByItem.clear()
         currentRunId = -1
     }
 
@@ -755,7 +870,21 @@ class SessionAggregator(
         val items = sessionItemTotals.values.sortedByDescending { kotlin.math.abs(it.value) }
 
         _state.update { s ->
-            val current = all.lastOrNull()?.takeIf { it.inProgress }
+            // "이번 맵" HUD 우선순위:
+            // 1) 진행 중인 "진짜 맵" 회차(isMapRun) — 정상적으로 맵 안에서 파밍 중.
+            // 2) [lastRunSnapshotForDisplay] — 맵을 막 나온 직후라 아직 새 맵을 안 열었을 때,
+            //    방금 닫힌 맵을 계속 보여준다. 이 사이 마을에서 경매장 거래 등으로 열리는
+            //    암묵적 회차([ensureCurrentRun], isMapRun=false)는 여기서 끼어들지 않는다 —
+            //    안 그러면 마을 활동 하나에도 방금 결과가 사라져 버린다. 새 맵이 열릴 때
+            //    ([startNewRun]) 비로소 지워진다.
+            // 3) 그 외(이번 세션에 아직 맵을 한 번도 안 열었음) — 진행 중인 암묵적 회차라도 보여준다
+            //    (맵 열기 전 마을 픽업이 안 보이지 않게, 기존 동작 그대로).
+            val inProgress = all.lastOrNull()?.takeIf { it.inProgress }
+            val current = when {
+                inProgress?.isMapRun == true -> inProgress
+                lastRunSnapshotForDisplay != null -> lastRunSnapshotForDisplay
+                else -> inProgress
+            }
             s.copy(
                 runs = all,
                 sessionItems = items,
@@ -810,6 +939,10 @@ class SessionAggregator(
             subtractFromSessionTotals(items)
             finishedRuns.removeAll { it.id == runId }
         }
+        // 지금 삭제한 회차가 "이번 맵" HUD 에 얼려 보여주고 있던 바로 그 회차라면, 목록에서는
+        // 빠졌는데 HUD 엔 여전히 남아 total/count 는 줄었지만 화면엔 그대로 보이는 불일치가
+        // 생긴다 — 같이 지운다.
+        if (lastRunSnapshotForDisplay?.id == runId) lastRunSnapshotForDisplay = null
         publishRuns()
     }
 
@@ -1035,7 +1168,9 @@ class SessionAggregator(
          * 오탐 걱정은 없다.
          */
         private const val MAP_EXIT_GRACE_MS = 500L
-        /** "가치" 탭/HUD 에 보여줄 최대 보유 아이템 종류 수 (가치 내림차순으로 자름). */
+        /** 마을 LevelUid — 실기기 캡처 전부에서 고정값으로 확인됨. [confirmPendingMapExit] 참조. */
+        private const val TOWN_LEVEL_UID = "111000"
+        /** "가치" 탭/HUD 에 보여줄 최대 보유 아이템 종류 수 (가치 내림차순으로 자른다). */
         private const val MAX_HOLDINGS = 50
         const val MAX_TIME_SAMPLES = 60   // 1분당 1점 × 60 = 최근 1시간
     }
