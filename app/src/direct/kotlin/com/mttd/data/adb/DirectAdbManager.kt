@@ -115,7 +115,26 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
                     // service 는 일부러 안 내린다 — 다음 IUserService 호출이 자연히 실패하면서
                     // 호출부(LogPoller 등)가 기존에 하던 에러 처리 경로를 그대로 타면 되고, 여기서
                     // service = null 로 내리면 그 사이 잠깐 "아직 준비 안 됨" 오탐이 뜬다.
+                    //
+                    // _connected/_status는 반드시 내려야 한다 — 이전엔 여기서 안 건드려서, 데몬이
+                    // 죽어도 ready.value가 계속 true로 남아 있었다. TrackerForegroundService의
+                    // 재시도 루프는 poller가 이미 떠 있으면 최초 부트스트랩 이후로는 다시 안
+                    // 돌아서(ensurePollerRunning() 은 poller != null 이면 즉시 return), 유일한
+                    // 재연결 트리거가 MainActivity.onResume() 뿐이었다 — 사용자가 앱을 다시 열기
+                    // 전까진 데몬이 죽은 채로 방치됐다(실기기 진단 로그로 확인: 재시도 로그가
+                    // 수십 분~1시간 넘게 한 번도 안 찍힘). ready를 false로 내려야 새로 추가한
+                    // 상시 감시 루프(TrackerForegroundService.startAccessWatchdog)가 죽음을
+                    // 감지하고 자동으로 retryConnect() 를 재개한다.
+                    _connected.value = false
+                    _status.value = Status.IDLE
                 }
+                // 데몬이 살아있는 동안 남기는 주기적 스냅샷(DirectDaemonStarter.dumpLogcatSnapshot)
+                // 은 최대 수십 초 전 것일 수밖에 없다 — 반면 이 죽음 통지 자체는 밀리초 단위로
+                // 정확하다. 지금까지의 재현이 전부 WiFi가 멀쩡한 상태에서 데몬만 죽었으므로, 이
+                // 순간 raw adb 연결(client)이 아직 살아있을 가능성이 높다 — 살아있다면 지금 바로
+                // logcat을 떠서 "죽는 바로 그 순간"에 훨씬 가까운 데이터를 남긴다. daemonBindLock
+                // 을 놓은 뒤에 한다 — blocking I/O로 죽음 처리 자체를 지연시키지 않기 위해.
+                captureDeathLogcat()
             }, 0)
         } catch (t: Throwable) {
             // linkToDeath 가 예외를 던지는 건 보통 바인더가 이 시점에 이미 죽어있었다는 뜻이다
@@ -138,6 +157,26 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
         Log.i(TAG, "daemon binder attached")
     }
 
+    /**
+     * [handleDaemonBinder] 의 [IBinder.DeathRecipient] 콜백에서만 호출 — 데몬이 죽은 걸 감지한
+     * 바로 그 순간, 아직 살아있을 raw adb 연결(client)로 logcat을 즉시 떠서 저장해둔다. 실패해도
+     * (client 도 마침 죽어있는 경우 등) 무해하게 무시한다 — 이미 [DirectDaemonStarter]의 주기적
+     * 스냅샷이라는 폴백이 있다.
+     */
+    private fun captureDeathLogcat() {
+        try {
+            val text = runShell("logcat -d -t 1500").toString(Charsets.UTF_8)
+            val filtered = text.lineSequence()
+                .filter { com.mttd.data.adb.starter.DirectDaemonStarter.LOGCAT_KEYWORDS.containsMatchIn(it) }
+                .joinToString("\n")
+            val dir = appContext.getExternalFilesDir(null) ?: return
+            java.io.File(dir, com.mttd.data.adb.starter.DirectDaemonStarter.DEATH_LOGCAT_FILE).writeText(filtered)
+            DiagnosticLog.log(appContext, "DirectAdb", "captured logcat at daemon death (${filtered.length} chars filtered)")
+        } catch (t: Throwable) {
+            DiagnosticLog.log(appContext, "DirectAdb", "failed to capture logcat at daemon death: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
     @Volatile
     private var daemonBound = false
     @Volatile
@@ -154,9 +193,20 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
         val starterPath = "${appContext.applicationInfo.nativeLibraryDir}/libmttd_starter.so"
         val apkPath = appContext.applicationInfo.sourceDir
         val authority = "${appContext.packageName}.direct.userservice"
+        // mttd_starter 는 이 이름과 일치하는 프로세스를 전부 죽이고(중복 데몬 정리 목적) 새로
+        // 띄운다 — 패키지명을 포함시키지 않으면, 같은 기기에 release/debug 등 서로 다른
+        // applicationId 로 설치된 인스턴스끼리 이름이 겹쳐서 서로의 데몬을 죽여버린다(실기기에서
+        // 확인: 릴리스판이 백그라운드에서 재연결 시도하며 launchDaemon() 을 부를 때마다 디버그판이
+        // 막 띄운 데몬이 붙은 지 수십 초 만에 죽었다).
+        val processName = "mttd_daemon_${appContext.packageName}"
+        // 데몬이 진단용 logcat 스냅샷을 쓸 경로 — /sdcard/Android/data/<pkg>/files 로 직접
+        // 재구성하게 두지 않고 앱이 실제로 읽는 경로를 그대로 넘긴다(듀얼앱/멀티유저 환경에서
+        // 서로 다른 경로로 갈릴 수 있어서). null이면(외부 저장소 마운트 안 됨 등) 그냥 생략 —
+        // 데몬 쪽에서 안 넘어오면 스냅샷 기능만 조용히 꺼진다.
+        val filesDirArg = appContext.getExternalFilesDir(null)?.let { " --filesdir=${it.absolutePath}" }.orEmpty()
         val cmd = "$starterPath --apk=$apkPath " +
             "--class=com.mttd.data.adb.starter.DirectDaemonStarter " +
-            "--name=mttd_daemon --authority=$authority --pkg=${appContext.packageName}"
+            "--name=$processName --authority=$authority --pkg=${appContext.packageName}$filesDirArg"
         launchingDaemon = true
         try {
             runShell(cmd)
@@ -306,7 +356,42 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
         try {
             runShell("logcat -d -t $maxLines").toString(Charsets.UTF_8)
         } catch (e: Exception) {
-            "(logcat 캡처 실패: ${e.javaClass.simpleName}: ${e.message})"
+            // 라이브 캡처는 이 앱의 adb 연결(client)이 살아있어야 되는데, 정작 필요한 순간
+            // (데몬이 알 수 없는 이유로 죽어서 이 연결도 같이 끊긴 경우)엔 그게 안 된다 —
+            // 실기기에서 반복 확인됨. 데몬이 살아있는 동안 남겨둔 스냅샷 파일로 대체한다
+            // (com.mttd.data.adb.starter.DirectDaemonStarter.dumpLogcatSnapshot 참고) — 앱
+            // 자신의 external files dir라 별도 권한 없이 바로 읽을 수 있다.
+            //
+            // 이 폴백 자체가 던지면(예: getExternalFilesDir()가 null을 반환해서 File(null, ..)
+            // 이 NPE) 바깥에 try가 없어 그대로 함수 밖으로 새나가고, DiagnosticLog 쪽 catch에
+            // 조용히 먹혀서 "--- logcat ---" 섹션 자체가 통째로 사라져버린 적이 실기기에서
+            // 있었다 — 그래서 폴백도 자기 예외를 반드시 잡아서 뭐라도 남기게 한다.
+            try {
+                val extDir = appContext.getExternalFilesDir(null)
+                // 죽는 순간 즉시 캡처(captureDeathLogcat)가 있으면 그게 훨씬 정확하니 우선한다 —
+                // 데몬이 살아있는 동안 남기는 주기적 스냅샷은 최대 수십 초 전 것일 수밖에 없다.
+                val death = extDir?.let {
+                    java.io.File(it, com.mttd.data.adb.starter.DirectDaemonStarter.DEATH_LOGCAT_FILE)
+                }?.takeIf { it.exists() }
+                val periodic = extDir?.let {
+                    java.io.File(it, com.mttd.data.adb.starter.DirectDaemonStarter.LOGCAT_SNAPSHOT_FILE)
+                }?.takeIf { it.exists() }
+                val snapshot = death ?: periodic
+                if (snapshot != null) {
+                    val label = if (snapshot === death) "죽는 순간 즉시 캡처" else "데몬이 주기적으로 남긴 스냅샷"
+                    val ageSec = (System.currentTimeMillis() - snapshot.lastModified()) / 1000
+                    val meta = java.io.File(snapshot.parentFile, "${snapshot.name}.meta")
+                        .takeIf { it.exists() }?.readText().orEmpty()
+                    "(라이브 캡처 실패: ${e.javaClass.simpleName}: ${e.message})\n" +
+                        "(대신 $label 사용 — ${ageSec}초 전 기록, $meta)\n\n" +
+                        snapshot.readText()
+                } else {
+                    "(logcat 캡처 실패: ${e.javaClass.simpleName}: ${e.message}, 스냅샷도 없음: extDir=$extDir)"
+                }
+            } catch (e2: Throwable) {
+                "(logcat 캡처 실패: ${e.javaClass.simpleName}: ${e.message})\n" +
+                    "(스냅샷 폴백 중 추가 오류: ${e2.javaClass.simpleName}: ${e2.message})"
+            }
         }
     }
 
@@ -336,7 +421,15 @@ class DirectAdbManager(private val appContext: Context) : PrivilegedAccessManage
             try { client?.close() } catch (_: Throwable) {}
             client = null
         }
-        _connected.value = false
+        // 데몬 바인더가 붙어있으면(daemonBound) 이 raw adb TCP 연결이 끊겨도(WiFi→LTE 전환 등)
+        // 실제 파일 접근은 계속 Binder IPC로 정상 동작한다 — 그게 이 데몬 구조를 만든 이유다.
+        // 그런데도 여기서 무조건 _connected 를 false로 내리면 상태 카드가 "연결 끊김"으로
+        // 잘못 표시돼서, 트래킹이 실제로는 안 끊겼는데 사용자에게는 끊긴 것처럼 보인다 —
+        // 실기기 로그로 확인됨(daemon binder died 없이 "connection lost: EOFException"만
+        // 찍히고 mTTD.DirectProvider 재전송 수신은 그 뒤로도 계속 정상이었다).
+        if (!daemonBound) {
+            _connected.value = false
+        }
         DiagnosticLog.log(appContext, "DirectAdb", "connection lost: ${t.javaClass.simpleName}: ${t.message}")
     }
 

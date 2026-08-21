@@ -194,8 +194,34 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
         ensureNotificationChannel()
         TrackerApplication.instance.setTrackerService(this)
         startPriceRefreshLoop()
+        startAccessWatchdog()
         checkForUpdateOnce()
         restoreRunsFromDisk()
+    }
+
+    /**
+     * [ensurePollerRunning] 의 재시도 루프는 `poller`가 한 번 뜨면(`poller != null`) 바로
+     * 멈춘다 — 최초 부트스트랩 전용이었다. 그런데 poller가 뜬 뒤에도 특권 접근 계층이 나중에
+     * 끊길 수 있다(예: direct 플레이버 데몬이 죽는 경우, DirectAdbManager 클래스 doc 참조) —
+     * 그 경우 poller 는 이미 떠 있으니 저 루프가 다시 돌지 않고, 유일한 재연결 트리거가
+     * `MainActivity.onResume()` 뿐이라 사용자가 앱을 다시 열기 전까진 방치됐다(실기기 진단
+     * 로그로 확인: 재시도 자체가 수십 분~1시간 넘게 한 번도 안 찍힌 사례).
+     *
+     * `poller`가 이미 있어도 계속 살아있는 별도의 상시 감시 루프 — `access.ready` 가 꺼지면
+     * (앞으로도 계속) 조용히 `retryConnect()` 만 재시도한다. 성공해서 `access.service` 가
+     * 새 바인더로 갈아끼워지면, 이미 떠 있는 `LogPoller` 가 `service = { access.service }` 로
+     * 매 폴링마다 다시 읽어가므로 poller 자체를 재시작할 필요는 없다.
+     */
+    private fun startAccessWatchdog() {
+        lifecycleScope.launch {
+            val access = TrackerApplication.instance.accessManager
+            while (true) {
+                if (!access.ready.value) {
+                    access.retryConnect()
+                }
+                kotlinx.coroutines.delay(POLLER_BOOTSTRAP_RETRY_MS)
+            }
+        }
     }
 
     /**
