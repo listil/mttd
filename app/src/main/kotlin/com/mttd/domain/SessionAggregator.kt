@@ -788,6 +788,17 @@ class SessionAggregator(
     /** 새 맵 시작 — 진행 중이던 회차를 닫아 기록으로 넘기고, "이번 맵" 을 비운다. */
     private fun startNewRun(lineLogMs: Long? = null) {
         closeCurrentRun()
+        // [confirmPendingMapExit] 의 "빈손 회차는 안 끊고 다음 회차로 넘긴다" 처리(그 함수
+        // 문서 참조)는 currentRunId 를 -1 로 둔 채 currentRunByItem 만 남겨서, 다음
+        // [ensureCurrentRun] 이 그걸 이어받는 걸 전제로 한다. 근데 그 다음에 오는 게
+        // ensureCurrentRun 이 아니라 지금처럼 진짜 새 맵(Spv3Open)이면, 위 closeCurrentRun()
+        // 은 이미 currentRunId < 0 이라 아무것도 안 하고 넘어가서, 그 dangling 아이템(나침반
+        // 소비 등)이 아래 clear() 로 어디에도 기록 안 된 채 통째로 유실된다(실기기 캡처: 맵을
+        // 열었다가 바로 다시 여는 패턴에서 재현) — 새 id 를 붙여 독립 회차로 확정해 흘린다.
+        if (currentRunByItem.isNotEmpty()) {
+            currentRunId = nextRunId++
+            closeCurrentRun()
+        }
         // 진짜 새 컴퍼스를 열었으니, 직전의 "나가는 신호 확인 대기" 는 더 이상 의미가 없다 —
         // 이 회차엔 적용 안 된다(안 지우면 나중에 엉뚱한 LevelUid 가 이 새 회차를 잘못 닫을 수 있음).
         pendingMapExitConfirm = false
@@ -846,6 +857,12 @@ class SessionAggregator(
         if (currentRunId >= 0) return
         currentRunId = nextRunId++
         currentRunStartedAtMs = atMs
+        // 이전에 닫힌 (진짜 맵) 회차가 남긴 로그-타임스탬프를 그대로 물려받으면 안 된다 —
+        // [endCurrentRunOnMapExit] 가 그 값을 이 암묵적 회차의 시작 시각으로 오인해서 elapsed
+        // 를 실제보다 훨씬 크게 계산하고, [MAP_EXIT_GRACE_MS] 노이즈 필터를 무력화시킨다
+        // (이 암묵적 회차가 방금 시작했어도 무조건 grace 를 넘긴 걸로 판정됨). null 로 두면
+        // endCurrentRunOnMapExit 이 처리 시각([currentRunStartedAtMs]) 기준으로 대체 판정한다.
+        currentRunStartedAtLogMs = null
         currentRunMapName = null
         currentRunIsMapRun = false
     }

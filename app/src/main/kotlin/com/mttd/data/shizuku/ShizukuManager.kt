@@ -63,6 +63,7 @@ class ShizukuManager(private val appContext: Context) : PrivilegedAccessManager 
             } else null
             DiagnosticLog.log(appContext, "Shizuku", "onServiceConnected pingBinder=${binder?.pingBinder()} -> bound=${service != null}")
             _state.update { it.copy(userServiceBound = service != null) }
+            bindInFlight = false
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -70,6 +71,7 @@ class ShizukuManager(private val appContext: Context) : PrivilegedAccessManager 
             service = null
             DiagnosticLog.log(appContext, "Shizuku", "onServiceDisconnected")
             _state.update { it.copy(userServiceBound = false) }
+            bindInFlight = false
         }
     }
 
@@ -159,7 +161,22 @@ class ShizukuManager(private val appContext: Context) : PrivilegedAccessManager 
         if (perm && service == null) bindUserService()
     }
 
+    /**
+     * `bindUserService()` 가 실제로 서비스에 연결되기까지는 비동기([serviceConnection] 콜백)라,
+     * 그 사이에 `service` 는 계속 null 로 보인다. `TrackerForegroundService` 가 이제
+     * `ensurePollerRunning()`(부트스트랩 루프)과 `startAccessWatchdog()`(상시 루프) 두 개를
+     * 동시에 돌리는데, 둘 다 3초 주기로 [retryConnect] 를 부르므로 이 사이 창에서 둘 다
+     * `service == null` 을 보고 각자 `bindUserService()` 를 부르는 게 흔한 케이스가 됐다 —
+     * 중복 바인딩 요청이 겹치면 진단 로그가 지저분해지고 두 시도가 상태를 번갈아 덮어쓸 수
+     * 있다. `DirectAdbManager` 가 같은 모양의 문제에 이미 걸어둔 `reconnecting` 가드와 동일한
+     * 목적. `serviceConnection` 의 두 콜백(성공/실패 둘 다) 에서 해제한다.
+     */
+    @Volatile
+    private var bindInFlight = false
+
     private fun bindUserService() {
+        if (bindInFlight) return
+        bindInFlight = true
         try {
             Log.i(TAG, "binding UserService…")
             DiagnosticLog.log(appContext, "Shizuku", "bindUserService() attempt")
@@ -167,6 +184,7 @@ class ShizukuManager(private val appContext: Context) : PrivilegedAccessManager 
         } catch (t: Throwable) {
             Log.e(TAG, "bindUserService failed", t)
             DiagnosticLog.log(appContext, "Shizuku", "bindUserService failed: ${t.javaClass.simpleName}: ${t.message}")
+            bindInFlight = false
         }
     }
 

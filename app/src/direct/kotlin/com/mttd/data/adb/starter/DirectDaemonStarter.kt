@@ -137,7 +137,21 @@ object DirectDaemonStarter {
      * 앱은 그 경로를 자기 것이라 별도 권한 없이 바로 읽을 수 있다. 임시 파일에 쓰고 rename하는
      * 이유: 쓰는 도중 죽으면(드물지만) 앱이 반쯤 쓰인 파일을 읽는 걸 피하려는 것.
      */
+    /**
+     * 재전송 루프 스레드와 겹치지 않게 이 함수는 항상 별도 스레드에서 fire-and-forget 으로
+     * 호출한다(아래 `main()` 의 호출부 참조) — 서브프로세스 spawn + 최대 1000줄 읽기 +
+     * `waitFor()` 가 통째로 announce 루프 자신의 스레드를 막으면, 그 지연이 다음 announce
+     * 시도까지 그대로 얹혀서 이 데몬이 원래 존재하는 이유인 "빠른 재연결"과 정면으로
+     * 어긋난다. [dumpInProgress] 는 그 별도 스레드끼리 겹치지 않게만 막는 가드 — 15초
+     * 주기(그것도 절반만, 위 loopCount 주석 참조)라 정상적으로는 절대 겹칠 일이 없고, 어쩌다
+     * logcat 서브프로세스가 유난히 느릴 때의 안전망일 뿐이다.
+     */
+    @Volatile
+    private var dumpInProgress = false
+
     private fun dumpLogcatSnapshot(filesDir: String) {
+        if (dumpInProgress) return
+        dumpInProgress = true
         try {
             val dir = File(filesDir)
             // 앱을 막 (재)설치한 직후엔 앱이 getExternalFilesDir() 를 아직 한 번도 안 불러서
@@ -175,10 +189,15 @@ object DirectDaemonStarter {
             // 로그 내용을 먼저 반영하고 meta를 나중에 반영한다 — 둘 다 tmp+rename이라 각각은
             // 원자적이지만, 이 사이에 죽으면(드물게) "최신 meta + 이전 로그" 조합보다는
             // "최신 로그 + 이전(또는 없는) meta" 쪽이 헷갈릴 여지가 적다.
-            tmp.renameTo(out)
-            metaTmp.renameTo(meta)
+            // renameTo() 는 실패해도 예외를 안 던지고 false 만 반환하므로(I/O 오류, 저장공간
+            // 부족 등) 반환값을 반드시 확인해야 한다 — 안 그러면 오래된/없는 스냅샷을 계속
+            // 서빙하면서도 로그에 아무 경고도 안 남는다.
+            if (!tmp.renameTo(out)) Log.w(TAG, "logcat snapshot rename failed: $tmp -> $out")
+            if (!metaTmp.renameTo(meta)) Log.w(TAG, "logcat snapshot meta rename failed: $metaTmp -> $meta")
         } catch (t: Throwable) {
             Log.w(TAG, "logcat snapshot failed", t)
+        } finally {
+            dumpInProgress = false
         }
     }
 
@@ -233,7 +252,11 @@ object DirectDaemonStarter {
                 }
             }
             loopCount++
-            if (filesDir != null && loopCount % 2 == 1) dumpLogcatSnapshot(filesDir)
+            // 별도 스레드로 fire-and-forget — announce 루프 자신의 스레드를 서브프로세스
+            // spawn/read/waitFor 로 막지 않는다 (dumpLogcatSnapshot 문서 참조).
+            if (filesDir != null && loopCount % 2 == 1) {
+                Thread({ dumpLogcatSnapshot(filesDir) }, "logcat-snapshot").apply { isDaemon = true }.start()
+            }
             Thread.sleep(ANNOUNCE_INTERVAL_MS)
         }
     }
