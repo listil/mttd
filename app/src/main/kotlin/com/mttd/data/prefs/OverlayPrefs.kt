@@ -24,6 +24,15 @@ class OverlayPrefs(private val context: Context) {
         context.dataStore.edit { it[KEY_PRICE_SOURCE] = id }
     }
 
+    /** ETOR 시즌 선택 모드(정규/하드코어, 항상 수동). 값은 [com.mttd.data.prices.SeasonMode.id]. */
+    val seasonModeId: Flow<String> = context.dataStore.data.map {
+        it[KEY_SEASON_MODE] ?: com.mttd.data.prices.SeasonMode.REGULAR.id
+    }
+
+    suspend fun setSeasonModeId(id: String) {
+        context.dataStore.edit { it[KEY_SEASON_MODE] = id }
+    }
+
     /** 배지(아이콘 오버레이) 2번째 줄에 표시할 수익 지표. 값은 [com.mttd.ui.overlay.BadgeIncomeMetric.id]. */
     val badgeIncomeMetric: Flow<String> = context.dataStore.data.map {
         it[KEY_BADGE_METRIC] ?: com.mttd.ui.overlay.BadgeIncomeMetric.DEFAULT.id
@@ -93,6 +102,7 @@ class OverlayPrefs(private val context: Context) {
         private val KEY_HUD_VISIBLE = booleanPreferencesKey("hud_visible")
         private val KEY_WIZARD_COMPLETED = booleanPreferencesKey("wizard_completed")
         private val KEY_PRICE_SOURCE = androidx.datastore.preferences.core.stringPreferencesKey("price_source")
+        private val KEY_SEASON_MODE = androidx.datastore.preferences.core.stringPreferencesKey("season_mode")
         private val KEY_BADGE_METRIC = androidx.datastore.preferences.core.stringPreferencesKey("badge_income_metric")
         private val KEY_TIME_BASIS = androidx.datastore.preferences.core.stringPreferencesKey("time_basis")
     }

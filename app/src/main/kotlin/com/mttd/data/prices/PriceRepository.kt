@@ -38,6 +38,29 @@ class PriceRepository(
     private val _source = MutableStateFlow(PriceSource.ETOR)
     val source: StateFlow<PriceSource> = _source.asStateFlow()
 
+    /**
+     * ETOR 시즌 선택([SeasonMode.REGULAR]/[SeasonMode.HARDCORE]) — 항상 수동이다. 로그에서
+     * 시즌ID 를 읽어 자동 전환하는 걸 시도한 적이 있는데(`SessionAggregator.onSeasonIdDetected`,
+     * `LogPoller.findRecentSeasonId`), 역방향 스캔과 실시간 감지 사이 순서 보장이 없어 재접속
+     * 타이밍에 따라 최신 감지값이 스캔의 stale 결과로 덮어써지는 등 신뢰성 문제가 있어 걷어냈다
+     * (2026-08-22) — 다시 붙이려면 그 레이스부터 해결해야 한다. 변경은 [setSeasonMode] 로만.
+     * 앱 시작 시 저장된 값을 [restoreSeasonMode] 로 주입.
+     */
+    private val _seasonMode = MutableStateFlow(SeasonMode.REGULAR)
+    val seasonMode: StateFlow<SeasonMode> = _seasonMode.asStateFlow()
+
+    /** 저장된 설정 복원. 아직 fetch 하지 않는다. */
+    fun restoreSeasonMode(m: SeasonMode) {
+        _seasonMode.value = m
+    }
+
+    /** 모드 전환 + 즉시 재조회 (ETOR 를 보고 있을 때만 의미 있음). */
+    suspend fun setSeasonMode(m: SeasonMode): Result<Int> {
+        if (_seasonMode.value == m) return Result.success(_state.value.priceById.size)
+        _seasonMode.value = m
+        return refreshLatest(forceRefresh = true)
+    }
+
     /** 저장된 설정 복원. 아직 fetch 하지 않는다. */
     fun restoreSource(s: PriceSource) {
         _source.value = s
@@ -52,11 +75,12 @@ class PriceRepository(
     }
 
     /**
-     * 최신 시즌 자동 감지 후 fetch.
+     * 최신 시즌 fetch. ETOR 는 [_seasonMode] 가 가리키는 체인(정규/하드코어)에서 스윕.
      *
-     * 시즌 ID 는 CN 서버 규칙상 100 단위로 증가 (S12=1401, S13=1501, S14=1601...).
-     * 후보 리스트를 최신→과거 순서로 시도하고 첫 유효(가격 데이터 있는) 응답을 사용.
-     * 마지막에 성공한 시즌 ID 는 인메모리 캐시에 남아 다음 요청 시 우선 시도.
+     * 시즌 ID 는 CN 서버 규칙상 100 단위로 증가 (S12=1401, S13=1501, S14=1601...) — 정규/
+     * 하드코어는 완전히 별개 체인이라([HARDCORE_SEASON_OFFSET]) 어느 체인인지는 유저가
+     * [setSeasonMode] 로 직접 고른다. 각 체인 안에서는 최신→과거 순서로 시도해 첫 유효(가격
+     * 데이터 있는) 응답을 쓴다.
      */
     suspend fun refreshLatest(forceRefresh: Boolean = false): Result<Int> {
         val cur = _state.value
@@ -70,7 +94,12 @@ class PriceRepository(
 
         return when (_source.value) {
             PriceSource.TTD -> refreshTtd()
-            PriceSource.ETOR -> refreshEtorLatestSeason()
+            // 캐시된 이전 시즌ID 를 스윕 시작점으로 재사용하면 반대 체인(정규↔하드코어) 값에서
+            // 출발해 엉뚱한 시즌을 찾을 수 있으므로, 항상 그 체인의 고정 시작점에서 새로 스윕한다.
+            PriceSource.ETOR -> when (_seasonMode.value) {
+                SeasonMode.REGULAR -> sweepSeasonChain(BASE_SEASON)
+                SeasonMode.HARDCORE -> sweepSeasonChain(BASE_SEASON + HARDCORE_SEASON_OFFSET)
+            }
         }
     }
 
@@ -104,19 +133,13 @@ class PriceRepository(
     }
 
     /**
-     * **최신 시즌만** 유지한다 (과거 시즌은 조회하지 않음).
-     *
-     * 시즌 ID 는 `<Sxx*100>+1` 규칙으로 100 씩 증가한다 (S13=1501, S14=1601 …).
-     * 하드코딩 후보 리스트 대신 **위로 탐색**해서 가장 높은 유효 시즌을 찾는다.
-     * 새 시즌이 열려도 코드 수정 없이 자동으로 따라간다.
-     *
-     * 정상 상태에서 네트워크 호출은 2 회 (현재 시즌 OK → 다음 시즌 empty → 중단).
+     * [start] 부터(그 체인의 고정 시작점 — [BASE_SEASON] 또는 `+`[HARDCORE_SEASON_OFFSET]) 위로
+     * 탐색해 **가장 높은 유효 시즌**(과거 시즌은 안 씀)을 찾는다. 시즌 ID 는 `<Sxx*100>+1`
+     * 규칙으로 100 씩 증가하므로([SEASON_STEP]) 하드코딩 후보 리스트 대신 위로 탐색해서 새
+     * 시즌이 열려도 코드 수정 없이 자동으로 따라간다. 정상 상태에서 네트워크 호출은 2 회
+     * (현재 시즌 OK → 다음 시즌 empty → 중단).
      */
-    private suspend fun refreshEtorLatestSeason(): Result<Int> {
-        val start = _state.value.seasonId?.toIntOrNull()
-            ?.takeIf { _state.value.source == PriceSource.ETOR }
-            ?: BASE_SEASON
-
+    private suspend fun sweepSeasonChain(start: Int): Result<Int> {
         var bestSeason: Int? = null
         var bestCount = 0
         var lastError: Throwable? = null
@@ -146,7 +169,7 @@ class PriceRepository(
         // 위로 탐색하다가 마지막에 빈 시즌을 만나면 state 가 그 실패로 덮여 있을 수 있다.
         // 최종 선택 시즌으로 한 번 더 확정 로드.
         if (_state.value.seasonId != season.toString()) refresh(season.toString())
-        Log.i(TAG, "using latest season $season")
+        Log.i(TAG, "using season $season (start=$start)")
         return Result.success(bestCount)
     }
 
@@ -245,6 +268,13 @@ class PriceRepository(
          * 탐색 시작점일 뿐이라 새 시즌이 열려도 수정할 필요 없다.
          */
         private const val BASE_SEASON = 1501
+        /**
+         * 하드코어 시즌ID 는 같은 세대 정규 시즌ID 에서 정확히 이만큼 높다(정규 1501 ↔
+         * 하드코어 1531, 정규 1401 ↔ 하드코어 1431 — 2026-08-22 실측/게임 내 확인). 하드코어도
+         * 세대마다 [SEASON_STEP] 씩 증가하는 별개 체인이라 [SeasonMode.HARDCORE] 스윕은
+         * `BASE_SEASON + HARDCORE_SEASON_OFFSET` 에서 시작한다.
+         */
+        private const val HARDCORE_SEASON_OFFSET = 30
         private const val SEASON_STEP = 100
         /** 탐색 하한/상한 — 무한 루프 방지용 가드. */
         private const val MIN_SEASON = 1001

@@ -249,10 +249,13 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
      */
     private fun startPriceRefreshLoop() {
         lifecycleScope.launch {
-            // 저장된 시세 출처 복원 (첫 fetch 전에)
+            // 저장된 시세 출처/시즌 모드 복원 (첫 fetch 전에)
             runCatching {
                 priceRepo.restoreSource(
                     com.mttd.data.prices.PriceSource.fromId(overlayPrefs.priceSourceId.first())
+                )
+                priceRepo.restoreSeasonMode(
+                    com.mttd.data.prices.SeasonMode.fromId(overlayPrefs.seasonModeId.first())
                 )
             }
             while (true) {

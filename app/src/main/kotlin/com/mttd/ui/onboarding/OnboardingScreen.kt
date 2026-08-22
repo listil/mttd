@@ -1045,6 +1045,8 @@ private fun PriceCard() {
 
     val priceState by (svc?.priceState ?: MutableStateFlow(com.mttd.data.prices.PriceRepository.State()))
         .collectAsStateWithLifecycle()
+    val seasonMode by (svc?.priceRepository()?.seasonMode ?: MutableStateFlow(com.mttd.data.prices.SeasonMode.REGULAR))
+        .collectAsStateWithLifecycle()
     val prefs = remember(context) { com.mttd.data.prefs.OverlayPrefs(context.applicationContext) }
 
     // 자동 fetch 는 TrackerForegroundService 가 담당한다 (앱 UI 를 안 열어도 시세가 필요하므로).
@@ -1073,6 +1075,26 @@ private fun PriceCard() {
                     }
                 },
             )
+
+            // 시즌 모드는 ETOR 에서만 의미 있음 — TTD 는 시즌 개념 자체가 없다.
+            if (priceState.source == com.mttd.data.prices.PriceSource.ETOR) {
+                Text(
+                    "시즌",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SeasonModeSelector(
+                    current = seasonMode,
+                    enabled = svc != null && !priceState.loading,
+                    onSelect = { mode ->
+                        val s = svc?.priceRepository() ?: return@SeasonModeSelector
+                        scope.launch {
+                            s.setSeasonMode(mode)
+                            prefs.setSeasonModeId(mode.id)
+                        }
+                    },
+                )
+            }
 
             Button(
                 onClick = {
@@ -1184,6 +1206,47 @@ private fun PriceSourceSelector(
                     Text(src.label, style = MaterialTheme.typography.bodyMedium)
                     Text(
                         src.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 시즌 선택(정규/하드코어). 하드코어 캐릭터로 플레이 중이면 여기서 직접 "하드코어"로
+ * 바꿔야 한다 — 항상 수동이다(자동 감지를 시도했었지만 신뢰성 문제로 걷어냄, [SeasonMode] 참고).
+ */
+@Composable
+private fun SeasonModeSelector(
+    current: com.mttd.data.prices.SeasonMode,
+    enabled: Boolean,
+    onSelect: (com.mttd.data.prices.SeasonMode) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        for (mode in com.mttd.data.prices.SeasonMode.entries) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(
+                        selected = current == mode,
+                        enabled = enabled,
+                        onClick = { onSelect(mode) },
+                    )
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = current == mode,
+                    onClick = { onSelect(mode) },
+                    enabled = enabled,
+                )
+                Column {
+                    Text(mode.label, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        mode.description,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

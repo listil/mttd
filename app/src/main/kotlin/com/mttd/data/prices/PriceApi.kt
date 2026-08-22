@@ -34,7 +34,9 @@ class PriceApi {
     /**
      * 시즌별 현재 시세 스냅샷 요청.
      *
-     * @param seasonId  게임 시즌 ID (예: "1501" for S13). 유저가 서버로 정보를 넘기는 유일한 지점.
+     * @param seasonId  게임 시즌 ID (예: "1501" for S13, 하드코어는 `+30` 오프셋인 "1531" —
+     *                  [com.mttd.data.prices.PriceRepository] 참고). 유저가 서버로 정보를
+     *                  넘기는 유일한 지점.
      */
     suspend fun fetchSnapshot(seasonId: String): PriceResponse = withContext(Dispatchers.IO) {
         val url = "$BASE_URL/etor-api/api/prices-snapshot/$seasonId?format=protobuf"
