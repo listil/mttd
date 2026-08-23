@@ -48,6 +48,8 @@ class SessionAggregator(
         pendingSlot = null
         latestMapCode = null
         currentRunByItem.clear()
+        pendingPreMapItems.clear()
+        inRefreshAffixBlock = false
         finishedRuns.clear()
         sessionItemTotals.clear()
         currentRunId = -1
@@ -243,8 +245,30 @@ class SessionAggregator(
     private val pickItemsStartRegex = Regex("""ItemChange@\s+ProtoName=PickItems?\s+start""")
     private val pickItemsEndRegex = Regex("""ItemChange@\s+ProtoName=PickItems?\s+end""")
     // 소비 이벤트 블록 (맵 열기 = 재료 소비)
-    private val consumeStartRegex = Regex("""ItemChange@\s+ProtoName=(Spv3Open|Spv3Enter|InputArea|XchgSyncSoldSale)\s+start""")
-    private val consumeEndRegex = Regex("""ItemChange@\s+ProtoName=(Spv3Open|Spv3Enter|InputArea|XchgSyncSoldSale)\s+end""")
+    private val consumeStartRegex = Regex("""ItemChange@\s+ProtoName=(Spv3Open|Spv3Enter|InputArea|XchgSyncSoldSale|Spv3RefreshAffix)\s+start""")
+    private val consumeEndRegex = Regex("""ItemChange@\s+ProtoName=(Spv3Open|Spv3Enter|InputArea|XchgSyncSoldSale|Spv3RefreshAffix)\s+end""")
+
+    /**
+     * 딥 스페이스류 맵 입장 전 옵션 리롤("메아리") — `Spv3Open` 과 별개의 블록으로, 실측(2026-08-23)
+     * 맵을 열기까지 최대 십수 초 전에 온다:
+     *   ItemChange@ ProtoName=Spv3RefreshAffix start
+     *   ItemChange@ Update Id=5040_... BagNum=20 in PageId=102 SlotId=8
+     *   BagMgr@:Modfy BagItem PageId = 102 SlotId = 8 ConfigBaseId = 5040 Num = 20
+     *   ItemChange@ ProtoName=Spv3RefreshAffix end
+     *   ... (다른 활동, 최대 십수 초) ...
+     *   ItemChange@ ProtoName=Spv3Open start   ← 진짜 맵 열기, 같은 아이템(5040) 또 소비
+     *
+     * `mapOpenStartRegex`/`startNewRun()` 을 얘가 직접 트리거하게 하면 리롤을 여러 번 누를 때마다
+     * 회차가 따로따로 열려버린다(유저가 리롤을 여러 번 하고 나서 한 번만 진짜로 여는 게 보통 흐름).
+     * 그렇다고 지금 열려 있는 회차(직전 맵의 뒷정리 중이거나 마을 암묵적 회차)에 바로 붙이면
+     * 엉뚱한 회차에 비용이 잡힌다 — 리롤은 "다음에 열 맵"의 비용이지 지금 회차의 비용이 아니다.
+     * 그래서 이 블록 안의 소비는 [pendingPreMapItems] 에 보류해뒀다가, 다음 [startNewRun] (진짜
+     * Spv3Open) 이 새 회차를 열 때 그 회차로 합쳐 넣는다.
+     */
+    private val refreshAffixStartRegex = Regex("""ItemChange@\s+ProtoName=Spv3RefreshAffix\s+start""")
+    private val refreshAffixEndRegex = Regex("""ItemChange@\s+ProtoName=Spv3RefreshAffix\s+end""")
+    private var inRefreshAffixBlock = false
+    private val pendingPreMapItems = mutableMapOf<String, PickupSummary>()
 
     /**
      * 맵 열기 = 이번 런의 시작. 여기서 나침반/비콘/탐침을 소비하므로
@@ -421,6 +445,11 @@ class SessionAggregator(
             consumeStartRegex.containsMatchIn(line) -> blockContext = BlockContext.CONSUME
             pickItemsEndRegex.containsMatchIn(line) -> blockContext = BlockContext.NONE
             consumeEndRegex.containsMatchIn(line) -> blockContext = BlockContext.NONE
+        }
+        // 맵 옵션 리롤 블록 — 이 안의 소비는 다음 startNewRun 이 새 회차로 합칠 때까지 보류.
+        when {
+            refreshAffixStartRegex.containsMatchIn(line) -> inRefreshAffixBlock = true
+            refreshAffixEndRegex.containsMatchIn(line) -> inRefreshAffixBlock = false
         }
 
         // 거래소 진입/퇴장 — 파밍 집계와 무관한 UI 전환이므로 다른 파싱과 독립적으로 처리.
@@ -810,6 +839,12 @@ class SessionAggregator(
         currentRunMapName = null
         currentRunIsMapRun = true
         currentRunByItem.clear()
+        // 맵 열기 전 옵션 리롤(Spv3RefreshAffix)로 보류해뒀던 비용을 이제 막 연 이 회차로 합친다
+        // ([pendingPreMapItems] 문서 참조).
+        if (pendingPreMapItems.isNotEmpty()) {
+            currentRunByItem.putAll(pendingPreMapItems)
+            pendingPreMapItems.clear()
+        }
         publishRuns()
     }
 
@@ -981,8 +1016,10 @@ class SessionAggregator(
             slotLastCount[slotUuid] = totalCountInSlot
             return
         }
-        // 맵을 열기 전에 얻은 것도 버리지 않고 암묵적 회차로 담는다.
-        ensureCurrentRun(timestampMs)
+        // 맵을 열기 전에 얻은 것도 버리지 않고 암묵적 회차로 담는다 — 단, 맵 옵션 리롤
+        // (Spv3RefreshAffix) 소비는 아직 어느 회차 것인지 모르니 암묵적 회차를 열지 않는다
+        // ([pendingPreMapItems] 문서 참조, 다음 진짜 맵 열기가 회차를 확정지어줄 때까지 보류).
+        if (!inRefreshAffixBlock) ensureCurrentRun(timestampMs)
         // 일시정지 중이면 slot 상태만 갱신하고 픽업 카운트 안 함.
         // slotLastCount 는 계속 최신값 유지해야 resume 후 다음 Modfy delta 가 정확.
         if (_state.value.paused) {
@@ -1042,7 +1079,10 @@ class SessionAggregator(
         )
 
         // 이번 맵 안 아이템별 누적. 같은 itemId 재관측이면 quantity/value 합산.
-        val prevAgg = currentRunByItem[itemId]
+        // 리롤 소비면 currentRunByItem 이 아니라 pendingPreMapItems 에 쌓아뒀다가 다음
+        // startNewRun 이 새 회차로 옮겨 담는다.
+        val bucket = if (inRefreshAffixBlock) pendingPreMapItems else currentRunByItem
+        val prevAgg = bucket[itemId]
         val merged = if (prevAgg == null) summary
         else prevAgg.copy(
             timestampMs = timestampMs,             // 마지막 관측 시각으로 갱신
@@ -1051,7 +1091,7 @@ class SessionAggregator(
             netValue = prevAgg.netValue + summary.netValue,
             unitPrice = summary.unitPrice.takeIf { it > 0f } ?: prevAgg.unitPrice,
         )
-        currentRunByItem[itemId] = merged
+        bucket[itemId] = merged
         addToSessionTotals(itemId, summary)
 
         if (!_state.value.active) return
