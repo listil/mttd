@@ -1,4 +1,4 @@
-<#
+﻿<#
 mTTD 저장소가 10분마다 자동 갱신하는 하드코어 시세(tools/generate-ttd-price-hardcore.js 참고)를
 받아서 로컬 TTD 앱 폴더의 ttd_price.json 을 덮어쓴다.
 
