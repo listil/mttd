@@ -7,7 +7,8 @@ mTTD 저장소가 10분마다 자동 갱신하는 하드코어 시세(tools/gene
 
   $d="$env:LOCALAPPDATA\mTTD"; New-Item -ItemType Directory -Force -Path $d | Out-Null; irm https://raw.githubusercontent.com/listil/mttd/main/tools/update-ttd-price-local.ps1 -OutFile "$d\update-ttd-price-local.ps1"; & "$d\update-ttd-price-local.ps1" -TargetDir "C:\Games\TTD" -RegisterTask
 
-한 번만 등록해두면 10분마다 자동으로 ttd_price.json 을 갱신한다 (터미널을 계속 켜둘 필요 없음).
+등록 후 24시간 동안 10분마다 자동 갱신되고, 그 뒤로는 자동으로 멈춘다 (터미널을 계속 켜둘 필요는
+없음). 계속 쓰려면 위 명령을 다시 실행해서 재등록한다 — 무기한으로 방치되는 걸 피하기 위한 설계.
 
 저장소를 이미 로컬에 갖고 있다면 그냥 파일로 직접 실행해도 된다:
   powershell -ExecutionPolicy Bypass -File update-ttd-price-local.ps1 -TargetDir "C:\Games\TTD" -RegisterTask
@@ -33,11 +34,12 @@ if ($RegisterTask) {
         -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`" -TargetDir `"$TargetDir`""
     $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
         -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
-        -RepetitionDuration ([TimeSpan]::MaxValue)
+        -RepetitionDuration (New-TimeSpan -Days 1)
     Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger `
         -Description "ETOR 하드코어 시세를 TTD 스타일로 받아 $TargetDir\ttd_price.json 자동 교체" `
-        -Force | Out-Null
+        -Force -ErrorAction Stop | Out-Null
     Write-Output "등록 완료: $IntervalMinutes 분마다 자동 실행됩니다 (작업 스케줄러 '$TaskName')."
+    Write-Output "24시간 뒤 자동으로 멈춥니다 - 계속 쓰려면 이 명령을 다시 실행하세요."
     exit
 }
 
