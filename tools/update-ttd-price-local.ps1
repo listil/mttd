@@ -5,7 +5,7 @@ mTTD 저장소가 10분마다 자동 갱신하는 하드코어 시세(tools/gene
 사용법 (파일을 따로 받을 필요 없이, PowerShell에 아래 한 줄만 붙여넣기 — "C:\Games\TTD" 부분만
 본인의 TTD.exe 설치 폴더 경로로 바꾼다):
 
-  $d="$env:LOCALAPPDATA\mTTD"; New-Item -ItemType Directory -Force -Path $d | Out-Null; irm https://raw.githubusercontent.com/listil/mttd/main/tools/update-ttd-price-local.ps1 -OutFile "$d\update-ttd-price-local.ps1"; & "$d\update-ttd-price-local.ps1" -TargetDir "C:\Games\TTD" -RegisterTask
+  $d="$env:LOCALAPPDATA\mTTD"; New-Item -ItemType Directory -Force -Path $d | Out-Null; irm https://raw.githubusercontent.com/listil/mttd/main/tools/update-ttd-price-local.ps1 -OutFile "$d\update-ttd-price-local.ps1"; powershell -ExecutionPolicy Bypass -File "$d\update-ttd-price-local.ps1" -TargetDir "C:\Games\TTD" -RegisterTask
 
 이 한 줄로 즉시 1회 갱신 + 스케줄 등록이 같이 된다. 등록 후 24시간 동안 10분마다 자동 갱신되고,
 그 뒤로는 자동으로 멈춘다 (터미널을 계속 켜둘 필요는 없음). 계속 쓰려면 위 명령을 다시 실행해서
