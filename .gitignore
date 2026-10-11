@@ -34,7 +34,12 @@ keystore.properties
 phase0/
 
 # Claude Code agent worktrees/state — local tooling artifacts, not project source
-.claude/
+.claude/*
+# 공유 설정·출력 스타일·스킬은 커밋 (settings.local.json, 워크트리 등은 계속 무시)
+!.claude/settings.json
+!.claude/output-styles/
+!.claude/commands/
+!.claude/skills/
 
 # scripts/capture-log.sh local checkpoint state
 .log-capture-mark
