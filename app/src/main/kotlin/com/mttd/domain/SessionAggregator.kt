@@ -55,6 +55,7 @@ class SessionAggregator(
         currentRunId = -1
         currentRunStartedAtLogMs = null
         pendingMapExitConfirm = false
+        boardEntryPageActive = false
         lastRunSnapshotForDisplay = null
         currentRunMapName = null
         currentRunIsMapRun = false
@@ -288,8 +289,16 @@ class SessionAggregator(
      * `TLGame: Display: [Game] warning: AudioBGM OnExit Level` 이 정확히 한 번씩, 마을
      * LevelUid(111000) 재진입보다 먼저 찍힌다 — Spv3Open 이 없는 캡처(순수 마을/재접속)에는
      * 한 번도 안 나타나 맵 전용 신호로 보인다.
+     *
+     * 시즌14(SeasonId 1601) 클라이언트부터 BGM 로그가 `[BGM_FLOW]`/`[BGM_WWISE]` 구조화 형식으로
+     * 통째로 바뀌어 위 줄은 더 이상 안 찍힌다(2026-10-19 실기기 로그 2개, Spv3Open 12회에 0건).
+     * 대신 같은 자리에 레벨 BGM 상태 종료가 찍힌다:
+     *   `[BGM_FLOW][EXIT_BEGIN] State=StateId=137320 Name=Level Type=E_Level(1) Run=E_playing ...`
+     * 타이밍도 예전 줄과 같다 — Spv3Open ~100ms 뒤(유예시간에 걸러짐) 한 번, 마을 복귀 시
+     * 목적지 LevelUid(111000) 직전 한 번. 보스/사망/UI BGM 의 EXIT_BEGIN(`Type=E_Boss` 등)은
+     * 맵 안에서도 수시로 찍히므로 `E_Level` 만 받는다.
      */
-    private val mapExitRegex = Regex("""AudioBGM OnExit Level""")
+    private val mapExitRegex = Regex("""AudioBGM OnExit Level|\[BGM_FLOW]\[EXIT_BEGIN].*\bType=E_Level\(""")
 
     /**
      * 거래소(경매장, AuctionHouseV2) 화면 진입/퇴장. `ItemChange@` 블록이 아니라 UI 페이지
@@ -300,6 +309,19 @@ class SessionAggregator(
      */
     private val exchangeEnterRegex = Regex("""PageName\s*=\s*AuctionHouseV2\s*,\s*PageRunState\s*=\s*Run""")
     private val exchangeExitRegex = Regex("""PageName\s*=\s*AuctionHouseV2\s*,\s*PageRunState\s*=\s*Destory""")
+
+    /**
+     * 시즌14 S16 보드 콘텐츠의 입장 화면. 감옥(`ZhongZuiDiYu`) 에 들어가기 전 이 화면에서 입장권
+     * (수갑, itemId 10330/10331) 을 소모하고, 보드판을 진행한 뒤 감옥에 들어간다 — 나침반을 쓰는
+     * Spv3Open 과 같은 "맵 열기" 지점이다. 실기기 로그(2026-10-19) 2회 모두 같은 순서:
+     *   PageName = S16GamePlayEntry , PageRunState = Run   (10.56.22)
+     *   ItemChange@ ProtoName=Push2 start → 10330 9→7     (10.56.29)
+     *   PageName = S16GamePlayEntry , PageRunState = Hide  (10.56.33, 보드판으로 넘어감)
+     * 소모가 Spv3Open 블록이 아니라 일반 Push2 로 와서, 화면이 떠 있는 동안의 Push2 를 회차 시작으로 본다.
+     */
+    private val boardEntryPageRegex = Regex("""PageName\s*=\s*S16GamePlayEntry\s*,\s*PageRunState\s*=\s*(\w+)""")
+    private val push2StartRegex = Regex("""ItemChange@\s+ProtoName=Push2\s+start""")
+    private var boardEntryPageActive = false
 
     private enum class BlockContext { NONE, PICKUP, CONSUME }
     private var blockContext: BlockContext = BlockContext.NONE
@@ -351,8 +373,9 @@ class SessionAggregator(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 32
     }
 
-    // MapName tracking (기존)
-    private val mapNameRegex = Regex("""(?:Load)?MapName\s*=\s*/Game/Art/Maps/[^/]+/([^/\s,]+)""")
+    // MapName tracking (기존). 시즌 콘텐츠 맵은 `/Game/Art/Season/S16/Maps/ZhongZuiDiYu/ZhongZuiDiYu`
+    // 처럼 `Art/Season/<시즌>/` 아래에 있다 (시즌14 실기기 로그).
+    private val mapNameRegex = Regex("""(?:Load)?MapName\s*=\s*/Game/Art/(?:Season/[^/]+/)?Maps/[^/]+/([^/\s,]+)""")
 
     @Volatile
     private var latestMapCode: String? = null
@@ -459,6 +482,15 @@ class SessionAggregator(
         // 맵 열기 = 새 런 시작. 이 직후의 소비(마이너스) 항목부터 "이번 진입" 에 쌓인다.
         if (mapOpenStartRegex.containsMatchIn(line)) startNewRun(parseLineLogMs(line))
 
+        // S16 보드 입장 화면에서의 입장권(수갑) 소모도 맵 열기와 같이 새 회차 시작 — [boardEntryPageRegex] 참조.
+        // 이미 맵 회차 안이면(같은 화면에서 Push2 가 또 오는 등) 이어간다.
+        boardEntryPageRegex.find(line)?.let { boardEntryPageActive = it.groupValues[1] == "Run" }
+        if (boardEntryPageActive && push2StartRegex.containsMatchIn(line) &&
+            !(currentRunId >= 0 && currentRunIsMapRun)
+        ) {
+            startNewRun(parseLineLogMs(line))
+        }
+
         // 맵에서 나감(그럴 수도 있는) 신호. 진짜 나가는 건지는 바로 다음에 오는 LevelUid 로
         // 확정한다 — [confirmPendingMapExit] 참조.
         if (mapExitRegex.containsMatchIn(line)) endCurrentRunOnMapExit(parseLineLogMs(line))
@@ -468,6 +500,24 @@ class SessionAggregator(
         // 포탈이었을 뿐인지 확정한다.
         if (pendingMapExitConfirm) {
             levelInfoRegex.find(line)?.let { confirmPendingMapExit(it.groupValues[1]) }
+        }
+
+        levelInfoRegex.find(line)?.let {
+            val levelUid = it.groupValues[1]
+            if (levelUid == TOWN_LEVEL_UID && currentRunId >= 0 && currentRunIsMapRun) {
+                // 맵 회차 중 마을 도착. 시즌14 로그에선 사망/보스 정벌 뒤 귀환처럼 마을 LevelUid 가
+                // 나가는 신호([mapExitRegex]) 보다 **먼저** 찍히는 경우가 있다(2026-10-19 실기기:
+                // 보스 정벌 맵 15.37.25 LevelUid 111000 → 15.37.27 EXIT_BEGIN). 그 순서면 확인 대기가
+                // 아직 안 섰다가 뒤늦게 서서, 다음 구역 진입(정상 대결 등)에 소비되며 회차가 안 닫혔다.
+                // 맵 회차 안에서 마을 LevelUid 가 오는 건 그 자체로 마을 복귀이므로, 나가는 신호와
+                // 같은 유예시간 판정만 거쳐 바로 확정한다.
+                endCurrentRunOnMapExit(parseLineLogMs(line))
+                confirmPendingMapExit(levelUid)
+            } else {
+                // Spv3Open 없이 들어가는 콘텐츠(시즌14 보드에서 들어가는 S16 시즌 맵 등)는 진입 자체를
+                // 회차 시작으로 잡는다 — [startRunOnUnopenedAreaEntry] 참조.
+                startRunOnUnopenedAreaEntry(levelUid, it.groupValues[2], parseLineLogMs(line))
+            }
         }
 
         // 가방 스냅샷 시작 → 계산 시작 (게임 응답 배치를 다 기다리지 않고 바로)
@@ -584,7 +634,7 @@ class SessionAggregator(
      * - `MapName`      — 맵 코드네임
      * - `OnEnterArea`  — 맵 진입
      * - `AuctionHouseV2` — 거래소 화면 진입/퇴장
-     * - `OnExit Level` — 맵에서 나감
+     * - `OnExit Level` / `[BGM_FLOW][EXIT_BEGIN]` — 맵에서 나감 (시즌13 이전 / 시즌14 이후 형식)
      */
     private fun isInteresting(line: String): Boolean =
         line.contains("ItemChange@") ||
@@ -593,7 +643,9 @@ class SessionAggregator(
         line.contains("MapName") ||
         line.contains("OnEnterArea") ||
         line.contains("AuctionHouseV2") ||
+        line.contains("S16GamePlayEntry") ||
         line.contains("OnExit Level") ||
+        line.contains("[BGM_FLOW][EXIT_BEGIN]") ||
         // [confirmPendingMapExit] 이 목적지를 확인할 "LevelUid, LevelType, LevelId = …" 줄.
         line.contains("LevelUid")
 
@@ -812,6 +864,26 @@ class SessionAggregator(
         }
         closeCurrentRun()
         publishRuns()
+    }
+
+    /**
+     * 마을이 아닌 구역에 들어왔는데 진행 중인 맵 회차가 없으면, 그 진입을 새 회차의 시작으로 본다.
+     *
+     * 지금까지 회차 시작은 [mapOpenStartRegex] (Spv3Open, 나침반으로 맵 열기) 하나뿐이었는데,
+     * 시즌14 에 추가된 S16 보드 콘텐츠(`/Game/Art/Season/S16/Maps/ZhongZuiDiYu`,
+     * `LevelUid, LevelType, LevelId = 344 28 235501`) 는 Spv3Open 없이 보드 화면에서 바로
+     * 들어간다(2026-10-19 실기기 로그). 그래서 회차가 안 열리고, 직전에 마을에서 보드 보상
+     * (Push2) 으로 열린 암묵적 회차에 맵 안 획득까지 통째로 합쳐져 마을 복귀 전까지 하나로 잡혔다.
+     *
+     * Spv3Open 으로 연 맵은 Spv3Open 이 LevelUid 보다 ~100ms 먼저 와서 이미 맵 회차가 열려
+     * 있으므로 여기선 아무것도 안 한다. 같은 회차 안의 다음 하위 구역 포탈, 사망 후 부활
+     * (같은 LevelUid 재진입), 여러 단계짜리 콘텐츠(LevelType 27 연속 진입) 도 마찬가지 —
+     * 이미 맵 회차 안이라 이어진다. 회차를 닫는 건 기존대로 마을 복귀([confirmPendingMapExit]).
+     */
+    private fun startRunOnUnopenedAreaEntry(levelUid: String, levelType: String, lineLogMs: Long?) {
+        if (levelUid == TOWN_LEVEL_UID || levelType == "0") return
+        if (currentRunId >= 0 && currentRunIsMapRun) return
+        startNewRun(lineLogMs)
     }
 
     /** 새 맵 시작 — 진행 중이던 회차를 닫아 기록으로 넘기고, "이번 맵" 을 비운다. */
