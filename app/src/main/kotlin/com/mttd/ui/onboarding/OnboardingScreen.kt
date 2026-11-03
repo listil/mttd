@@ -566,6 +566,92 @@ fun DiagnosticLogButton() {
     ) { Text(if (sending) "로그 준비 중..." else "📋 진단 로그 보내기") }
 }
 
+/**
+ * 원본 게임 로그의 최근 구간을 zip 으로 묶어 공유 시트로 넘기는 버튼 — 시즌 변경으로 로그 형식이
+ * 바뀐 경우처럼 실제 로그 없이는 재현이 안 되는 파싱 버그 제보용. [com.mttd.diagnostics.GameLogExport] 참조.
+ * 로그엔 캐릭터·계정 정보가 들어 있어서 보내기 전에 범위 선택과 함께 안내를 먼저 띄운다.
+ */
+@Composable
+fun GameLogButton(userService: () -> IUserService?) {
+    val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var showDialog by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf<Float?>(null) }
+    // 최근 20MB 가 실측 약 20분 분량 (2026-10-19 태블릿 로그: 85MB ≈ 1시간 30분 플레이).
+    val ranges = listOf<Pair<String, Long?>>(
+        "최근 20MB (약 20분)" to 20L * 1024 * 1024,
+        "최근 50MB (약 1시간)" to 50L * 1024 * 1024,
+        "전체 (최대 수백 MB, 오래 걸림)" to null,
+    )
+    var selected by remember { mutableStateOf(0) }
+
+    TextButton(
+        onClick = { showDialog = true },
+        enabled = progress == null,
+    ) {
+        Text(
+            progress?.let { "게임 로그 준비 중... ${(it * 100).toInt()}%" } ?: "🎮 게임 로그 보내기"
+        )
+    }
+
+    if (showDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text("게임 로그 보내기") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "게임 로그에는 캐릭터명·계정 정보 등이 들어 있습니다. " +
+                            "믿을 수 있는 사람(개발자)에게만 보내세요.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    ranges.forEachIndexed { i, (label, _) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .selectable(selected = selected == i, onClick = { selected = i }),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = selected == i, onClick = { selected = i })
+                            Text(label, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDialog = false
+                    val svc = userService()
+                    if (svc == null) {
+                        android.widget.Toast.makeText(context, "게임 로그에 접근할 수 없습니다 (연결 상태를 확인하세요)", android.widget.Toast.LENGTH_LONG).show()
+                        return@TextButton
+                    }
+                    progress = 0f
+                    scope.launch {
+                        try {
+                            val pkg = withContext(Dispatchers.IO) {
+                                svc.listInstalledGamePackages().lines().firstOrNull { it.isNotBlank() }
+                            } ?: error("설치된 게임을 찾지 못했습니다.")
+                            val path = "/sdcard/Android/data/$pkg/files/UE4Game/UE_game/UE_game/Saved/Logs/UE_game.log"
+                            val intent = com.mttd.diagnostics.GameLogExport.buildShareIntent(
+                                context, svc, path, ranges[selected].second,
+                            ) { p -> progress = p }
+                            context.startActivity(intent)
+                        } catch (t: Throwable) {
+                            android.widget.Toast.makeText(context, "게임 로그 준비 실패: ${t.message}", android.widget.Toast.LENGTH_LONG).show()
+                        } finally {
+                            progress = null
+                        }
+                    }
+                }) { Text("보내기") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false }) { Text("취소") }
+            },
+        )
+    }
+}
+
 @Composable
 fun StatusRow(label: String, ok: Boolean) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -607,6 +693,7 @@ private fun AdvancedSection(userService: () -> IUserService?) {
             }
             if (expanded) {
                 DiagnosticLogButton()
+                GameLogButton(userService = userService)
                 ProbeCard(userService = userService)
                 LogTailCard(userService = userService)
             }
