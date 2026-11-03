@@ -1137,9 +1137,12 @@ private fun ObservedPriceSection() {
     val app = context.applicationContext as TrackerApplication
     val service by app.trackerService.collectAsStateWithLifecycle()
     val svc = service
-    val observed by (svc?.observedPriceState
+    val observedAll by (svc?.observedPriceState
         ?: MutableStateFlow(emptyMap<String, com.mttd.data.prices.ObservedPriceStore.Observed>()))
         .collectAsStateWithLifecycle()
+    // 만료(24시간)된 관측은 가격에 안 쓰이므로 목록에서도 뺀다.
+    val cutoff = System.currentTimeMillis() - com.mttd.data.prices.ObservedPriceStore.EXPIRY_MS
+    val observed = observedAll.filterValues { it.observedAtMs >= cutoff }
 
     // 서비스가 이미 들고 있는 것을 재사용. 여기서 새로 만들면 311 KB JSON 을 또 파싱한다.
     val itemInfo = svc?.itemInfoLookup()
@@ -1153,8 +1156,8 @@ private fun ObservedPriceSection() {
     }
     if (observed.isEmpty()) {
         Text(
-            "게임 경매장에서 아이템 시세를 조회하면 그 값이 스냅샷보다 우선 적용됩니다. " +
-                "가루(가루 거래)로 매겨진 호가는 제외합니다.",
+            "게임 경매장에서 아이템 시세를 조회하면 가장 싼 호가 20건의 평균이 24시간 동안 " +
+                "스냅샷보다 우선 적용됩니다. 가루로 매겨진 호가와, 옵션마다 값이 다른 히어로 추억·신격은 제외합니다.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1165,7 +1168,7 @@ private fun ObservedPriceSection() {
             val name = itemInfo?.lookup(o.itemId)?.name ?: o.itemId
             Text(
                 "▸ $name · 평균 ${"%.4f".format(o.avgPrice)} " +
-                    "(호가 ${o.samples}건, ${"%.4f".format(o.lowest)}~${"%.4f".format(o.highest)}) · " +
+                    "(최저가 ${o.samples}건, ${"%.4f".format(o.lowest)}~${"%.4f".format(o.highest)}) · " +
                     formatUpdatedAgo(o.observedAtMs),
                 style = MaterialTheme.typography.bodySmall,
             )

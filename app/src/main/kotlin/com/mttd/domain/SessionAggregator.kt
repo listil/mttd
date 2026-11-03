@@ -353,10 +353,21 @@ class SessionAggregator(
     //   |      | +unitPrices+1 [3.0]         ← 최저가순 호가. 관측상 100 건
     //   |      | |          +2 [3.0]
     //   ----Socket RecvMessage End----
+    //
+    // 시즌14(2026-10 말 패치) 부터 Send 의 필터가 종류 키 + 다음 줄 refer 로 나뉘어 찍힌다
+    // (2026-10-31 태블릿 로그). 위의 한 줄짜리 `+filters+1+refer` 만 보던 예전 정규식으론 하나도
+    // 안 잡혀서, 그 뒤 조회한 시세가 전혀 반영되지 않았다:
+    //   +filters+1+key [4]                   ← 4 = 아이템(베이스 ID) 검색
+    //   |       | +refer [400008]            ← itemId
+    //   +typ3 [65]
+    // 장비 검색은 `+filters+1+key [16]` 다음 refer 가 장비 고유 ID(113111 등)라 가방의
+    // ConfigBaseId 와 대응하지 않으므로 기록하지 않는다.
     private val xchgSendHeaderRegex = Regex("""SendMessage\s+STT----XchgSearchPrice----SynId\s*=\s*(\d+)""")
     private val xchgRecvHeaderRegex = Regex("""RecvMessage\s+STT----XchgSearchPrice----SynId\s*=\s*(\d+)""")
     private val socketEndRegex = Regex("""----Socket\s+\w+Message\s+End----""")
-    private val xchgReferRegex = Regex("""\+filters\+\d+\+refer\s*\[(\d+)\]""")
+    /** 예전 `+filters+1+refer [id]` 와 시즌14 `| +refer [id]` 를 모두 받는다. */
+    private val xchgReferRegex = Regex("""\+refer\s*\[(\d+)\]""")
+    private val xchgFilterKeyRegex = Regex("""\+filters\+1\+key\s*\[(\d+)\]""")
     private val xchgCurrencyRegex = Regex("""\+currency\s*\[(\d+)\]""")
     /** `+<n> [<price>]` — `+prices+1+currency [..]` 처럼 숫자 뒤에 바로 `[` 가 안 오는 건 안 걸린다. */
     private val xchgUnitPriceRegex = Regex("""\+\d+\s+\[([0-9]*\.?[0-9]+)\]""")
@@ -364,6 +375,8 @@ class SessionAggregator(
     private enum class XchgMode { NONE, SEND, RECV }
     private var xchgMode = XchgMode.NONE
     private var xchgSynId: String? = null
+    /** 현재 Send 블록의 `+filters+1+key` 값. 예전 형식엔 이 줄이 없어서 null 이면 아이템 검색으로 본다. */
+    private var xchgSendKey: String? = null
     private var xchgLineCount = 0
     private var xchgInUnitPrices = false
     private var xchgCurrency: String? = null
@@ -660,6 +673,7 @@ class SessionAggregator(
             flushPendingSlotAsBaseline()
             xchgMode = XchgMode.SEND
             xchgSynId = it.groupValues[1]
+            xchgSendKey = null
             xchgLineCount = 0
             return true
         }
@@ -693,9 +707,15 @@ class SessionAggregator(
 
         when (xchgMode) {
             XchgMode.SEND -> {
+                xchgFilterKeyRegex.find(line)?.let { xchgSendKey = it.groupValues[1] }
                 val refer = xchgReferRegex.find(line)?.groupValues?.get(1)
                 val syn = xchgSynId
-                if (refer != null && syn != null) xchgItemBySynId[syn] = refer
+                // 블록의 첫 refer 만 조회 대상이다 (장비 검색은 뒤에 `+3+refer [0]` 같은 옵션 필터가 이어짐).
+                if (refer != null && refer != "0" && syn != null && !xchgItemBySynId.containsKey(syn) &&
+                    (xchgSendKey == null || xchgSendKey == XCHG_ITEM_SEARCH_KEY)
+                ) {
+                    xchgItemBySynId[syn] = refer
+                }
             }
             XchgMode.RECV -> {
                 xchgCurrencyRegex.find(line)?.let { xchgCurrency = it.groupValues[1] }
@@ -715,11 +735,27 @@ class SessionAggregator(
         return true
     }
 
+    /**
+     * 같은 이름이어도 개체마다 옵션이 달라 값이 천차만별인 아이템 — 경매장 호가를 이름 단위로
+     * 평균 내면 의미가 없어 조회 시세로 쓰지 않는다 (스냅샷 시세만 쓴다).
+     * 2026-10-31 실기기: 근원의 추억 단가 1,842, 명왕의 신격: 심판 9,183 으로 잡혀 수익이 크게
+     * 부풀었다 (TTD 시세는 각각 0, 6.9). 히어로 추억 전체 + 시즌 애프터 중 "신격" 이 그 대상.
+     * "신격 계약"/"신격의 조각" 은 타입이 달라(쌓이는 재료) 여기 안 걸린다.
+     */
+    private fun isRandomRollItem(itemId: String): Boolean {
+        val info = itemInfo.lookup(itemId) ?: return false
+        return info.type == "히어로 추억" || (info.type == "시즌 애프터" && info.name.contains("신격"))
+    }
+
     private fun finishXchgRecv() {
         val itemId = xchgSynId?.let { xchgItemBySynId.remove(it) } ?: return
         if (xchgUnitPrices.isEmpty()) return
         // 결정(100300) 으로 매겨진 호가만 쓴다. 가루(100200) 거래는 계산에서 제외.
         if (xchgCurrency != null && xchgCurrency != BASE_CURRENCY_ID) {
+            xchgUnitPrices.clear()
+            return
+        }
+        if (isRandomRollItem(itemId)) {
             xchgUnitPrices.clear()
             return
         }
@@ -1288,6 +1324,8 @@ class SessionAggregator(
         private const val BASE_CURRENCY_ID = "100300"
         /** 경매장 블록이 비정상적으로 길면 파싱을 포기 (End 라인 유실 대비). */
         private const val MAX_XCHG_BLOCK_LINES = 400
+        /** `+filters+1+key` 값 중 아이템(베이스 ID) 검색. 16 은 장비 고유 ID 검색. */
+        private const val XCHG_ITEM_SEARCH_KEY = "4"
         /** 보관할 최대 회차 수. 넘으면 오래된 것부터 버린다. */
         private const val MAX_RUNS = 200
         /**
