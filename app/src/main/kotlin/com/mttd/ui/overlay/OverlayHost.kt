@@ -50,6 +50,8 @@ class OverlayHost(
     private val sessionState: StateFlow<SessionState>,
     private val priceState: StateFlow<com.mttd.data.prices.PriceRepository.State>,
     private val prefs: OverlayPrefs,
+    private val plunderState: StateFlow<com.mttd.domain.PlunderDispatchTracker.State>? = null,
+    private val onClearPlunderReady: () -> Unit = {},
 ) : ViewModelStoreOwner {
 
     private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -101,6 +103,9 @@ class OverlayHost(
                 sessionState = sessionState,
                 metricFlow = prefs.badgeIncomeMetric,
                 timeBasisFlow = prefs.timeBasisId,
+                plunderState = plunderState,
+                plunderEnabledFlow = prefs.plunderEnabled,
+                plunderModeFlow = prefs.plunderDisplayMode,
             )
         }
         attachDragBehavior(
@@ -164,6 +169,10 @@ class OverlayHost(
                     hudView?.let { v -> try { wm.updateViewLayout(v, hudParams) } catch (_: Throwable) {} }
                 },
                 onDragEnd = { ownScope.launch { prefs.setHudPosition(hudParams.x, hudParams.y) } },
+                plunderState = plunderState,
+                plunderEnabledFlow = prefs.plunderEnabled,
+                plunderModeFlow = prefs.plunderDisplayMode,
+                onClearPlunderReady = onClearPlunderReady,
             )
         }
         try {

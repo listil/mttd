@@ -92,6 +92,32 @@ class OverlayPrefs(private val context: Context) {
         context.dataStore.edit { it[KEY_HUD_VISIBLE] = v }
     }
 
+    /**
+     * 약탈 파견("군주") 타이머 사용 여부. 켜져 있어도 이번 세션에 파견이 감지되기 전엔 HUD 에
+     * 아무것도 안 나온다 — 약탈을 안 하는 사람한텐 끄는 것과 다를 게 없게.
+     */
+    val plunderEnabled: Flow<Boolean> = context.dataStore.data.map { it[KEY_PLUNDER_ENABLED] ?: true }
+
+    suspend fun setPlunderEnabled(v: Boolean) {
+        context.dataStore.edit { it[KEY_PLUNDER_ENABLED] = v }
+    }
+
+    /** HUD 표시 방식. 값은 [com.mttd.ui.overlay.PlunderDisplayMode.id]. */
+    val plunderDisplayMode: Flow<String> = context.dataStore.data.map {
+        it[KEY_PLUNDER_DISPLAY] ?: com.mttd.ui.overlay.PlunderDisplayMode.DEFAULT.id
+    }
+
+    suspend fun setPlunderDisplayMode(id: String) {
+        context.dataStore.edit { it[KEY_PLUNDER_DISPLAY] = id }
+    }
+
+    /** 쿨다운이 끝나면 시스템 알림. */
+    val plunderNotify: Flow<Boolean> = context.dataStore.data.map { it[KEY_PLUNDER_NOTIFY] ?: true }
+
+    suspend fun setPlunderNotify(v: Boolean) {
+        context.dataStore.edit { it[KEY_PLUNDER_NOTIFY] = v }
+    }
+
     companion object {
         private val Context.dataStore by preferencesDataStore(name = "overlay_prefs")
         private val KEY_ICON_X = intPreferencesKey("icon_x")
@@ -105,5 +131,8 @@ class OverlayPrefs(private val context: Context) {
         private val KEY_SEASON_MODE = androidx.datastore.preferences.core.stringPreferencesKey("season_mode")
         private val KEY_BADGE_METRIC = androidx.datastore.preferences.core.stringPreferencesKey("badge_income_metric")
         private val KEY_TIME_BASIS = androidx.datastore.preferences.core.stringPreferencesKey("time_basis")
+        private val KEY_PLUNDER_ENABLED = booleanPreferencesKey("plunder_enabled")
+        private val KEY_PLUNDER_DISPLAY = androidx.datastore.preferences.core.stringPreferencesKey("plunder_display_mode")
+        private val KEY_PLUNDER_NOTIFY = booleanPreferencesKey("plunder_notify")
     }
 }

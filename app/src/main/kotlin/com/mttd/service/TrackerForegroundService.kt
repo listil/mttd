@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -67,6 +68,12 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
     private var overlay: OverlayHost? = null
     private val assembler = MessageAssembler()
     private val characterLoadoutTracker = com.mttd.domain.CharacterLoadoutTracker()
+    private val plunderTracker = com.mttd.domain.PlunderDispatchTracker()
+
+    /** 약탈("군주") 파견 타이머 — HUD/배지와 설정 탭이 같이 본다. */
+    val plunderState: StateFlow<com.mttd.domain.PlunderDispatchTracker.State> get() = plunderTracker.state
+    fun resetPlunderTimers() = plunderTracker.reset()
+    fun showPlunderDemo() = plunderTracker.showDemo()
 
     /**
      * 마지막으로 관측된 캐릭터 장비/스킬/석판 스냅샷. 로그인 직후 한 번 오는 `GetPlayerData`
@@ -197,6 +204,55 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
         startAccessWatchdog()
         checkForUpdateOnce()
         restoreRunsFromDisk()
+        startPlunderNotifier()
+    }
+
+    /**
+     * 약탈("군주") 쿨다운이 끝나면 알림. 알림은 ID 하나만 써서 "약탈 N건 준비" 로 개수만 갱신한다
+     * — 4건을 한꺼번에 보냈으면 거의 같은 시각에 4번 끝나는데, 같은 ID 를 [setOnlyAlertOnce] 로
+     * 갱신하면 첫 번째만 울리고 나머지는 숫자만 바뀐다. 준비된 칸이 다시 파견돼 0 이 되면 지운다.
+     * 준비 칸 자동 만료([PlunderDispatchTracker.expireStale])도 이 루프가 깨어날 때 처리한다 —
+     * 알림을 꺼 둬도 만료는 돌아야 하므로 enabled/notify 와 무관하게 루프는 돈다.
+     */
+    private fun startPlunderNotifier() {
+        lifecycleScope.launch {
+            kotlinx.coroutines.flow.combine(
+                plunderTracker.state, overlayPrefs.plunderEnabled, overlayPrefs.plunderNotify,
+            ) { s, enabled, notify -> Triple(s, enabled, notify) }
+                .collectLatest { (s, enabled, notify) ->
+                    while (true) {
+                        // 만료로 state 가 바뀌면 collectLatest 가 새 state 로 다시 돈다.
+                        if (plunderTracker.expireStale()) return@collectLatest
+                        val now = System.currentTimeMillis()
+                        val ready = s.readyCount(now)
+                        if (enabled && notify && ready > 0) postPlunderNotification(ready) else cancelPlunderNotification()
+                        val next = s.nextChangeAtMs(now) ?: break
+                        kotlinx.coroutines.delay(next - now + 500)
+                    }
+                }
+        }
+    }
+
+    private fun postPlunderNotification(ready: Int) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (!androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()) return
+        val pi = PendingIntent.getActivity(
+            this, 1, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val n = NotificationCompat.Builder(this, PLUNDER_CHANNEL_ID)
+            .setContentTitle("군주(약탈) 다시 보낼 수 있어요")
+            .setContentText("약탈 ${ready}건 준비")
+            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .build()
+        nm.notify(PLUNDER_NOTIF_ID, n)
+    }
+
+    private fun cancelPlunderNotification() {
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(PLUNDER_NOTIF_ID)
     }
 
     /**
@@ -276,6 +332,8 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
                 sessionState = aggregator.state,
                 priceState = priceRepo.state,
                 prefs = overlayPrefs,
+                plunderState = plunderTracker.state,
+                onClearPlunderReady = plunderTracker::clearReady,
             ).also { it.attach() }
         }
         return overlay!!
@@ -396,6 +454,7 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
                 // 라인 단위 관측 (맵 코드네임 등 assembler 밖 컨텍스트)
                 aggregator.observeLine(line.text)
                 characterLoadoutTracker.observeLine(line.text, line.offset)
+                plunderTracker.observeLine(line.text)
                 // 필터 통과분만 assembler 에 공급
                 if (!LogLineFilter.shouldExclude(line.text)) {
                     assembler.feed(line.text)?.let { msg -> aggregator.consume(msg) }
@@ -461,6 +520,15 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
                     ).apply { description = "게임 로그 파일을 폴링하는 백그라운드 서비스" }
                 )
             }
+            if (nm.getNotificationChannel(PLUNDER_CHANNEL_ID) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        PLUNDER_CHANNEL_ID,
+                        "군주(약탈) 준비 알림",
+                        NotificationManager.IMPORTANCE_DEFAULT,
+                    ).apply { description = "오아시스 약탈 파견 30분 쿨다운이 끝나면 알려줍니다" }
+                )
+            }
         }
     }
 
@@ -485,6 +553,8 @@ class TrackerForegroundService : LifecycleService(), SavedStateRegistryOwner {
         private const val TAG = "mTTD.Service"
         private const val CHANNEL_ID = "tli_log_watch"
         private const val NOTIF_ID = 42
+        private const val PLUNDER_CHANNEL_ID = "plunder_ready"
+        private const val PLUNDER_NOTIF_ID = 43
         /** 시세 TTL 과 동일 (PriceRepository.TTL_MS = 1h). */
         private const val PRICE_REFRESH_INTERVAL_MS = 60L * 60 * 1000
         private const val PRICE_RETRY_INTERVAL_MS = 60L * 1000

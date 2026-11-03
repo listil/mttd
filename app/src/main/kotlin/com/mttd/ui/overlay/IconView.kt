@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -74,8 +75,15 @@ fun IconOverlay(
     sessionState: StateFlow<SessionState>,
     metricFlow: Flow<String> = flowOf(BadgeIncomeMetric.DEFAULT.id),
     timeBasisFlow: Flow<String> = flowOf(com.mttd.domain.models.TimeBasis.DEFAULT.id),
+    /** 약탈("군주") 타이머 — 수익 숫자 아래 점으로 표시 ([PlunderDots]). */
+    plunderState: StateFlow<com.mttd.domain.PlunderDispatchTracker.State>? = null,
+    plunderEnabledFlow: Flow<Boolean> = flowOf(false),
+    plunderModeFlow: Flow<String> = flowOf(PlunderDisplayMode.DEFAULT.id),
 ) {
     val session by sessionState.collectAsStateWithLifecycle()
+    val plunder = plunderState?.collectAsStateWithLifecycle()?.value
+    val plunderEnabled by plunderEnabledFlow.collectAsStateWithLifecycle(initialValue = false)
+    val plunderModeId by plunderModeFlow.collectAsStateWithLifecycle(initialValue = PlunderDisplayMode.DEFAULT.id)
     val metricId by metricFlow.collectAsStateWithLifecycle(initialValue = BadgeIncomeMetric.DEFAULT.id)
     val metric = remember(metricId) { BadgeIncomeMetric.fromId(metricId) }
     val timeBasisId by timeBasisFlow.collectAsStateWithLifecycle(
@@ -142,6 +150,10 @@ fun IconOverlay(
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                 )
+            }
+            if (plunderEnabled && plunder != null && plunder.anyDispatched) {
+                Spacer(Modifier.height(2.dp))
+                PlunderDots(plunder, PlunderDisplayMode.fromId(plunderModeId))
             }
         }
     }

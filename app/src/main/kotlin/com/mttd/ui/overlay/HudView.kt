@@ -89,8 +89,17 @@ fun HudOverlay(
     onDragBy: (dx: Float, dy: Float) -> Unit = { _, _ -> },
     /** 창-이동 드래그 종료 — 위치 영속화 트리거용. */
     onDragEnd: () -> Unit = {},
+    /** 약탈("군주") 파견 타이머. null 이면 표시 안 함. */
+    plunderState: StateFlow<com.mttd.domain.PlunderDispatchTracker.State>? = null,
+    plunderEnabledFlow: kotlinx.coroutines.flow.Flow<Boolean> = kotlinx.coroutines.flow.flowOf(false),
+    plunderModeFlow: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.flowOf(PlunderDisplayMode.DEFAULT.id),
+    /** 군주 줄 탭 — 준비된(초록) 칸을 지운다. 게임 밖(PC 등)에서 받아 감지 못한 경우용. */
+    onClearPlunderReady: () -> Unit = {},
 ) {
     val session by sessionState.collectAsStateWithLifecycle()
+    val plunder = plunderState?.collectAsStateWithLifecycle()?.value
+    val plunderEnabled by plunderEnabledFlow.collectAsStateWithLifecycle(initialValue = false)
+    val plunderModeId by plunderModeFlow.collectAsStateWithLifecycle(initialValue = PlunderDisplayMode.DEFAULT.id)
     val prices = priceState?.collectAsStateWithLifecycle()?.value
     val timeBasisId by timeBasisFlow.collectAsStateWithLifecycle(
         initialValue = com.mttd.domain.models.TimeBasis.DEFAULT.id,
@@ -258,6 +267,9 @@ fun HudOverlay(
                 HudStat("총 수익", formatFire(session.totalValue) + " (${formatFire(session.netTotalValue)} TAX)")
                 HudStat("시간당 (${timeBasis.shortLabel})", formatFire(incomePerHour) + "/h (${formatFire(netIncomePerHour)}/h TAX)")
                 HudStat("맵 진입", "${session.mapsEntered}")
+                if (plunderEnabled && plunder != null) {
+                    PlunderRow(plunder, PlunderDisplayMode.fromId(plunderModeId), onClearReady = onClearPlunderReady)
+                }
 
                 Spacer(Modifier.height(1.dp))
                 Row(

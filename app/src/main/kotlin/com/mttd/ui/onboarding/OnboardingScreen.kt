@@ -180,6 +180,7 @@ fun OnboardingScreen(
                         // 안 그러면 재부팅 등으로 접근이 끊겼을 때 이미 켜둔 오버레이 설정을
                         // 확인/조정할 카드 자체가 통째로 사라져 보인다.
                         OverlayCard()
+                        PlunderCard()
                         if (ready) {
                             PriceCard()
                             LoadoutExportCard()
@@ -929,6 +930,96 @@ private fun OverlayCard() {
                 current = com.mttd.ui.overlay.BadgeIncomeMetric.fromId(badgeMetricId),
                 onSelect = { m -> scope.launch { prefs.setBadgeIncomeMetric(m.id) } },
             )
+        }
+    }
+}
+
+/**
+ * 오아시스 약탈 파견("군주") 30분 타이머 설정. 감지 자체는 항상 돌고(가벼움), 여기서 끄면
+ * HUD/배지 표시와 알림만 꺼진다. [com.mttd.domain.PlunderDispatchTracker] 참조.
+ */
+@Composable
+private fun PlunderCard() {
+    val context = LocalContext.current
+    val prefs = remember(context) { com.mttd.data.prefs.OverlayPrefs(context.applicationContext) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val app = context.applicationContext as TrackerApplication
+    val service by app.trackerService.collectAsStateWithLifecycle()
+    val enabled by prefs.plunderEnabled.collectAsStateWithLifecycle(initialValue = true)
+    val notify by prefs.plunderNotify.collectAsStateWithLifecycle(initialValue = true)
+    val modeId by prefs.plunderDisplayMode.collectAsStateWithLifecycle(
+        initialValue = com.mttd.ui.overlay.PlunderDisplayMode.DEFAULT.id,
+    )
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("군주(약탈) 타이머", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "오아시스에서 약탈을 보내면 대상별 30분 쿨다운을 HUD에 원형 6칸(5분씩)으로 보여줍니다. " +
+                            "앱을 켜기 전에 보낸 파견은 알 수 없습니다. 끝나서 초록이 된 칸은 보상함에서 받거나, " +
+                            "HUD의 군주 줄을 탭하거나, 1시간이 지나면 사라집니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                androidx.compose.material3.Switch(
+                    checked = enabled,
+                    onCheckedChange = { v -> scope.launch { prefs.setPlunderEnabled(v) } },
+                )
+            }
+            if (enabled) {
+                HorizontalDivider()
+                Text(
+                    "HUD 표시 방식",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                for (m in com.mttd.ui.overlay.PlunderDisplayMode.entries) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(selected = m.id == modeId, onClick = { scope.launch { prefs.setPlunderDisplayMode(m.id) } }),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = m.id == modeId, onClick = { scope.launch { prefs.setPlunderDisplayMode(m.id) } })
+                        Text(m.label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("30분이 지나면 알림", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    androidx.compose.material3.Switch(
+                        checked = notify,
+                        onCheckedChange = { v -> scope.launch { prefs.setPlunderNotify(v) } },
+                    )
+                }
+                if (notify && !androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+                    Text(
+                        "앱 알림이 꺼져 있어 알림이 오지 않습니다. 시스템 설정에서 mTTD 알림을 켜 주세요.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { service?.showPlunderDemo() },
+                        enabled = service != null,
+                    ) { Text("테스트 표시") }
+                    OutlinedButton(
+                        onClick = { service?.resetPlunderTimers() },
+                        enabled = service != null,
+                    ) { Text("타이머 초기화") }
+                }
+                Text(
+                    "테스트 표시: 25분·10분 남음 / 준비 상태를 HUD와 배지에 띄웁니다(준비 1건 알림도 옵니다).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
